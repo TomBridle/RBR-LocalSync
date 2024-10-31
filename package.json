@@ -1,0 +1,19 @@
+{
+  "name": "local-sync-app-electron",
+  "version": "1.0.0",
+  "description": "Local sync app with WebSocket and .ini file monitoring",
+  "main": "index.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "bonjour": "^3.5.0",
+    "chokidar": "^3.5.2",
+    "electron": "^13.1.7",
+    "firebase": "^11.0.1",
+    "ini": "^2.0.0",
+    "node-fetch": "^2.7.0",
+    "sqlite3": "^5.1.7",
+    "ws": "^7.4.6"
+  }
+}

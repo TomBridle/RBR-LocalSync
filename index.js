@@ -1,0 +1,412 @@
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const os = require('os');
+const chokidar = require('chokidar');
+const WebSocket = require('ws');
+const fs = require('fs');
+const ini = require('ini');
+const bonjour = require('bonjour')();
+const path = require('path');
+const sqlite3 = require('sqlite3').verbose();
+
+let mainWindow;
+const clients = {}; // Store WebSocket clients by device ID
+const clientFiles = {}; // Track received files per client
+const sentFiles = new Set(); // Track globally sent files
+let folderPath = null;
+let configFilePath; // Set this after app is ready
+let db; // Initialize db variable here
+
+// Helper function to get the local network IP address
+function getLocalIPAddress() {
+  const interfaces = os.networkInterfaces();
+  for (const iface of Object.values(interfaces)) {
+    for (const details of iface) {
+      if (details.family === 'IPv4' && !details.internal) {
+        return details.address;
+      }
+    }
+  }
+  return 'localhost';
+}
+
+// Create WebSocket server using the local network IP
+const localIP = getLocalIPAddress();
+const wss = new WebSocket.Server({ port: 8080 });
+const wsUrl = `ws://${localIP}:8080`; // Define WebSocket URL using the local IP
+
+// Advertise service on local network using bonjour
+bonjour.publish({ name: 'Local Sync WebSocket', type: 'ws', port: 8080 });
+
+// Load configuration file
+function loadConfig() {
+  try {
+    if (!fs.existsSync(configFilePath)) {
+      const defaultConfig = { folderPath: null };
+      fs.writeFileSync(configFilePath, JSON.stringify(defaultConfig, null, 2));
+      console.log('Config file created with default settings.');
+    }
+    
+    const config = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+    folderPath = config.folderPath || null;
+    if (folderPath) {
+      setupDatabase(folderPath); // Initialize database if folderPath is set
+    }
+  } catch (error) {
+    console.error('Error loading or creating config file:', error);
+  }
+}
+
+// Create and update HTML status content in the window
+function updateStatus() {
+  const connectedDevices = Object.keys(clients).map(
+    (deviceId) => `<li>${deviceId}</li>`
+  ).join('');
+
+  mainWindow.webContents.send('status-update', {
+    folderPath,
+    connectedDevices,
+    fileStatus: Array.from(sentFiles),
+    wsUrl // Add WebSocket URL to the status update
+  });
+}
+
+function setupDatabase(basePath) {
+  const dbPath = path.join(basePath, 'Plugins', 'NGPCarMenu', 'RaceStat', 'raceStatDB.sqlite3');
+  db = new sqlite3.Database(dbPath, (err) => {
+    if (err) {
+      return console.error('Error opening database at path:', dbPath, 'Error:', err.message);
+    }
+    console.log('Connected to database at', dbPath);
+  });
+}
+
+function saveConfig() {
+  const config = { folderPath };
+  fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
+}
+
+app.on('ready', () => {
+  configFilePath = path.join(app.getPath('userData'), 'config.json');
+  loadConfig();
+
+  mainWindow = new BrowserWindow({
+    width: 800,
+    height: 600,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    }
+  });
+
+  mainWindow.loadURL(`data:text/html;charset=utf-8,
+    <html>
+      <body>
+        <h1>Folder Sync Status</h1>
+        <div><strong>WebSocket URL:</strong> <span id="ws-url">${wsUrl}</span></div>
+        <div id="folder-path">Folder Path: ${folderPath || 'Not set'}</div>
+        <button onclick="window.requestFolder()">Set Folder Path</button>
+        <h2>Connected Devices:</h2>
+        <ul id="device-list"></ul>
+        <h2>Files Sent:</h2>
+        <ul id="file-list"></ul>
+        <script>
+          const { ipcRenderer } = require('electron');
+          ipcRenderer.on('status-update', (event, data) => {
+            document.getElementById('ws-url').innerText = data.wsUrl || 'Not available';
+            document.getElementById('folder-path').innerText = 'Folder Path: ' + (data.folderPath || 'Not set');
+            document.getElementById('device-list').innerHTML = data.connectedDevices || '<li>None</li>';
+            document.getElementById('file-list').innerHTML = data.fileStatus.map(file => '<li>' + file + '</li>').join('') || '<li>None</li>';
+          });
+          
+          window.requestFolder = () => {
+            ipcRenderer.send('request-folder');
+          };
+        </script>
+      </body>
+    </html>
+  `);
+
+  ipcMain.on('request-folder', async () => {
+    const result = dialog.showOpenDialogSync(mainWindow, {
+      properties: ['openDirectory']
+    });
+
+    if (result) {
+      folderPath = result[0];
+      saveConfig();
+      setupDatabase(folderPath); // Initialize database with the selected folder path
+      startWatchingFolder(folderPath);
+      updateStatus();
+    }
+  });
+
+  
+
+  if (folderPath) {
+    startWatchingFolder(folderPath);
+  } else {
+    mainWindow.webContents.on('did-finish-load', () => {
+      mainWindow.webContents.send('status-update', { folderPath: 'Not set', wsUrl });
+    });
+  }
+});
+
+function startWatchingFolder(rootPath) {
+  const pacenotePath = path.join(rootPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes'); // Define pacenote folder path
+  const watcher = chokidar.watch(pacenotePath, { persistent: true });
+
+  watcher.on('add', filePath => {
+    console.log(`File added: ${filePath}`);
+    broadcastFileToClients(filePath, rootPath); // Pass rootPath to make file paths relative
+    updateStatus();
+  });
+  watcher.on('change', filePath => {
+    console.log(`File changed: ${filePath}`);
+    broadcastFileToClients(filePath, rootPath);
+    updateStatus();
+  });
+  watcher.on('unlink', filePath => {
+    console.log(`File removed: ${filePath}`);
+    sentFiles.delete(filePath); // Remove from sent files set if deleted
+    updateStatus();
+  });
+}
+
+// Rest of your WebSocket and database functions remain unchanged
+
+
+function broadcastFileToClients(filePath, rootPath) {
+  const pacenoteRoot = path.join(rootPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes'); // Root path of MyPacenotes
+
+  if (!filePath.endsWith('.ini')) {
+    console.log(`Skipping non-.ini file: ${filePath}`);
+    return;
+  }
+
+  if (sentFiles.has(filePath)) {
+    console.log(`File ${filePath} has already been sent. Skipping.`);
+    return;
+  }
+
+  try {
+    // Relative path should be from inside MyPacenotes folder
+    const relativePath = path.relative(pacenoteRoot, filePath);
+
+    // Ensure the file is inside MyPacenotes
+    if (relativePath.startsWith('..')) {
+      console.log(`Skipping file outside of MyPacenotes: ${filePath}`);
+      return;
+    }
+
+    const fileContent = fs.readFileSync(filePath, 'utf-8');
+    const parsedContent = ini.parse(fileContent);
+
+    const jsonContent = {
+      path: relativePath, // Only the relative path within MyPacenotes
+      data: parsedContent
+    };
+
+    Object.keys(clients).forEach(deviceId => {
+      if (!clientFiles[deviceId].has(filePath)) {
+        sendToClient(deviceId, jsonContent);
+        clientFiles[deviceId].add(filePath);
+      }
+    });
+
+    sentFiles.add(filePath);
+    updateStatus();
+  } catch (error) {
+    console.error('Error reading or parsing .ini file:', error);
+  }
+}
+
+
+
+
+// WebSocket server handling connections
+wss.on('connection', (ws) => {
+  console.log('Client connected');
+  
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+
+      if (data.type === 'getStageTimes' && data.RaceDate) {
+        getStageTimesAfterDate(data.RaceDate, (stageTimes) => {
+          ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
+        });
+      } else if (data.deviceId) {
+        const deviceId = data.deviceId;
+        clients[deviceId] = ws;
+        console.log(`Device ID received: ${deviceId}`);
+
+        if (!clientFiles[deviceId]) {
+          clientFiles[deviceId] = new Set();
+        }
+
+        sendMissingFiles(deviceId);
+        updateStatus();
+      } else {
+        console.log('Received message without deviceId:', message);
+      }
+    } catch (e) {
+      console.error('Error parsing message:', e);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('Client disconnected');
+    
+    for (const [deviceId, clientWs] of Object.entries(clients)) {
+      if (clientWs === ws) {
+        console.log(`Device ID ${deviceId} disconnected`);
+        delete clients[deviceId];
+        updateStatus();
+        break;
+      }
+    }
+  });
+});
+
+function getStageTimesAfterDate(raceDate, raceDateTime, callback) {
+  // Concatenate date and time fields and compare as a single integer value
+  const query = `
+    SELECT * FROM F_RallyResult 
+    WHERE CAST(RaceDate || RaceDateTime AS INTEGER) > CAST(? AS INTEGER)
+  `;
+
+  // Combine RaceDate and RaceDateTime as a single value for comparison
+  const combinedDateTime = `${raceDate}${raceDateTime}`;
+  console.log(`Executing query for combined datetime: ${combinedDateTime}`);
+  
+  db.all(query, [combinedDateTime], (err, rows) => {
+    if (err) {
+      console.error('Error querying stage times:', err);
+      callback([]);
+      return;
+    }
+
+    // Log and pass back the query results
+    console.log("Query results:", JSON.stringify(rows, null, 2));
+    callback(rows);
+  });
+}
+// WebSocket server handling connections
+// WebSocket server handling connections
+wss.on('connection', (ws) => {
+  console.log('Client connected');
+
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      console.log(data)
+      // Check if the message type is `getStageTimes`
+      if (data.type === 'getStageTimes' && typeof data.RaceDate === 'number' && typeof data.RaceDateTime === 'number') {
+        // Call the function to get stage times without needing deviceId
+        getStageTimesAfterDate(data.RaceDate, data.RaceDateTime, (stageTimes) => {
+          console.log("Sending stage times to client:", JSON.stringify(stageTimes));
+
+          // Send the response back to the client
+          ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
+        });
+      } else if (data.deviceId) {
+        // For other types of messages, handle deviceId as expected
+        const deviceId = data.deviceId;
+        clients[deviceId] = ws;
+        console.log(`Device ID received: ${deviceId}`);
+
+        if (!clientFiles[deviceId]) {
+          clientFiles[deviceId] = new Set();
+        }
+
+        sendMissingFiles(deviceId);
+        updateStatus();
+      } else {
+        // If neither type `getStageTimes` nor deviceId, log an error
+        console.log('Received message with unknown type or missing deviceId:', message);
+      }
+    } catch (e) {
+      console.error('Error parsing message:', e);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('Client disconnected');
+
+    for (const [deviceId, clientWs] of Object.entries(clients)) {
+      if (clientWs === ws) {
+        console.log(`Device ID ${deviceId} disconnected`);
+        delete clients[deviceId];
+        updateStatus();
+        break;
+      }
+    }
+  });
+});
+
+
+function broadcastFileToClients(filePath) {
+  if (!filePath.endsWith('.ini')) {
+    console.log(`Skipping non-.ini file: ${filePath}`);
+    return;
+  }
+
+  if (sentFiles.has(filePath)) {
+    console.log(`File ${filePath} has already been sent. Skipping.`);
+    return;
+  }
+
+  try {
+    const relativePath = path.relative(folderPath, filePath); // Make path relative to folderPath
+    const fileContent = fs.readFileSync(filePath, 'utf-8');
+    const parsedContent = ini.parse(fileContent);
+
+    const jsonContent = {
+      path: relativePath,
+      data: parsedContent
+    };
+
+    Object.keys(clients).forEach(deviceId => {
+      if (!clientFiles[deviceId].has(filePath)) {
+        sendToClient(deviceId, jsonContent);
+        clientFiles[deviceId].add(filePath);
+      }
+    });
+
+    sentFiles.add(filePath);
+    updateStatus();
+  } catch (error) {
+    console.error('Error reading or parsing .ini file:', error);
+  }
+}
+
+function sendToClient(deviceId, jsonContent) {
+  const client = clients[deviceId];
+  if (client && client.readyState === WebSocket.OPEN) {
+    client.send(JSON.stringify(jsonContent));
+    console.log(`Sent file to device ${deviceId}:`, jsonContent);
+  }
+}
+
+function sendMissingFiles(deviceId) {
+  const client = clients[deviceId];
+  if (!clientFiles[deviceId]) clientFiles[deviceId] = new Set();
+
+  sentFiles.forEach(filePath => {
+    const relativePath = path.relative(folderPath, filePath);
+    if (!clientFiles[deviceId].has(filePath)) {
+      sendToClient(deviceId, {
+        path: relativePath,
+        data: ini.parse(fs.readFileSync(filePath, 'utf-8'))
+      });
+      clientFiles[deviceId].add(filePath);
+    }
+  });
+}
+
+
+app.on('before-quit', () => {
+  bonjour.unpublishAll(() => {
+    bonjour.destroy();
+  });
+});
