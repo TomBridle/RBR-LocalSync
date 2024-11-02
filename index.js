@@ -292,37 +292,66 @@ function getStageTimesAfterDate(raceDate, raceDateTime, callback) {
   });
 }
 // WebSocket server handling connections
-// WebSocket server handling connections
+// New function to send all available .ini files to a specific client
+// Function to send all available .ini files to a specific client
+function sendAllFilesToClient(deviceId) {
+  const client = clients[deviceId];
+  if (!client) return;
+
+  // Clear the client's sent files set to resend all files
+  clientFiles[deviceId] = new Set();
+
+  const pacenotePath = path.join(folderPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes');
+  const files = fs.readdirSync(pacenotePath);
+
+  files.forEach((file) => {
+    const filePath = path.join(pacenotePath, file);
+    if (file.endsWith('.ini') && fs.existsSync(filePath)) {
+      const relativePath = path.relative(folderPath, filePath);
+      const fileContent = fs.readFileSync(filePath, 'utf-8');
+      const parsedContent = ini.parse(fileContent);
+
+      const jsonContent = {
+        path: relativePath,
+        data: parsedContent
+      };
+
+      sendToClient(deviceId, jsonContent); // Send each .ini file to the client
+    }
+  });
+
+  console.log(`Resent all available files to device ${deviceId}`);
+}
+
+// Modify the WebSocket message handler to include the 'sendFiles' message handling
 wss.on('connection', (ws) => {
   console.log('Client connected');
 
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      console.log(data)
-      // Check if the message type is `getStageTimes`
-      if (data.type === 'getStageTimes' && typeof data.RaceDate === 'number' && typeof data.RaceDateTime === 'number') {
-        // Call the function to get stage times without needing deviceId
-        getStageTimesAfterDate(data.RaceDate, data.RaceDateTime, (stageTimes) => {
-          console.log("Sending stage times to client:", JSON.stringify(stageTimes));
 
-          // Send the response back to the client
-          ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
-        });
-      } else if (data.deviceId) {
-        // For other types of messages, handle deviceId as expected
+      if (data.deviceId && data.sendNotes) {
+        console.log('send and deviceid received');
         const deviceId = data.deviceId;
-        clients[deviceId] = ws;
-        console.log(`Device ID received: ${deviceId}`);
-
         if (!clientFiles[deviceId]) {
           clientFiles[deviceId] = new Set();
         }
-
+        sendAllFilesToClient(deviceId); // Resend all files to the client
+      } else if (data.type === 'getStageTimes' && typeof data.RaceDate === 'number' && typeof data.RaceDateTime === 'number') {
+        getStageTimesAfterDate(data.RaceDate, data.RaceDateTime, (stageTimes) => {
+          console.log("Sending stage times to client:", JSON.stringify(stageTimes));
+          ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
+        });
+      } else if (data.deviceId) {
+        const deviceId = data.deviceId;
+        clients[deviceId] = ws;
+        if (!clientFiles[deviceId]) {
+          clientFiles[deviceId] = new Set();
+        }
         sendMissingFiles(deviceId);
         updateStatus();
       } else {
-        // If neither type `getStageTimes` nor deviceId, log an error
         console.log('Received message with unknown type or missing deviceId:', message);
       }
     } catch (e) {
@@ -332,7 +361,6 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     console.log('Client disconnected');
-
     for (const [deviceId, clientWs] of Object.entries(clients)) {
       if (clientWs === ws) {
         console.log(`Device ID ${deviceId} disconnected`);
@@ -343,6 +371,8 @@ wss.on('connection', (ws) => {
     }
   });
 });
+
+
 
 
 function broadcastFileToClients(filePath) {
