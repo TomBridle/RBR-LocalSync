@@ -98,33 +98,132 @@ app.on('ready', () => {
     }
   });
 
-  mainWindow.loadURL(`data:text/html;charset=utf-8,
-    <html>
-      <body>
-        <h1>Folder Sync Status</h1>
-        <div><strong>WebSocket URL:</strong> <span id="ws-url">${wsUrl}</span></div>
-        <div id="folder-path">Folder Path: ${folderPath || 'Not set'}</div>
-        <button onclick="window.requestFolder()">Set Folder Path</button>
-        <h2>Connected Devices:</h2>
-        <ul id="device-list"></ul>
-        <h2>Files Sent:</h2>
-        <ul id="file-list"></ul>
-        <script>
-          const { ipcRenderer } = require('electron');
-          ipcRenderer.on('status-update', (event, data) => {
-            document.getElementById('ws-url').innerText = data.wsUrl || 'Not available';
-            document.getElementById('folder-path').innerText = 'Folder Path: ' + (data.folderPath || 'Not set');
-            document.getElementById('device-list').innerHTML = data.connectedDevices || '<li>None</li>';
-            document.getElementById('file-list').innerHTML = data.fileStatus.map(file => '<li>' + file + '</li>').join('') || '<li>None</li>';
-          });
-          
-          window.requestFolder = () => {
-            ipcRenderer.send('request-folder');
-          };
-        </script>
-      </body>
-    </html>
-  `);
+  const htmlContent = `
+  <html>
+    <head>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          background-color: #111;
+          color: #fff;
+          text-align: center;
+          margin: 0;
+          padding: 0;
+        }
+        h1 {
+          color: #e60000; /* Bold red like the Richard Burns text */
+          margin-top: 20px;
+          font-size: 28px;
+          letter-spacing: 1px;
+        }
+        h2 {
+          color: #e60000;
+          margin-top: 30px;
+          font-size: 22px;
+        }
+        #status-container {
+          display: flex;
+          justify-content: center;
+          margin-top: 20px;
+          gap: 20px;
+        }
+        .status-item {
+          padding: 15px;
+          border-radius: 8px;
+          background-color: #222;
+          width: 200px;
+          text-align: left; /* Align text to the left */
+        }
+        .status-item strong {
+          display: block;
+          font-size: 16px;
+          color: #fff; /* Changed to white */
+        }
+        #ws-url, #folder-path {
+          display: block;
+          margin: 10px 0;
+          font-size: 16px;
+          color: white; /* Changed to white */
+        }
+        #folder-path {
+          text-align: left; /* Align folder path text to the left */
+        }
+        button {
+          background-color: #e60000;
+          border: none;
+          color: white;
+          padding: 10px 20px;
+          text-align: center;
+          text-decoration: none;
+          display: inline-block;
+          font-size: 16px;
+          margin: 15px 0;
+          cursor: pointer;
+          border-radius: 5px;
+          transition: background-color 0.3s;
+        }
+        button:hover {
+          background-color: #cc0000;
+        }
+        #device-list, #file-list {
+          list-style: none;
+          padding: 0;
+          font-size: 15px;
+          text-align: left; /* Align list items to the left */
+        }
+        #device-list li, #file-list li {
+          background-color: #333;
+          margin: 5px 0;
+          padding: 8px;
+          border-radius: 4px;
+          color: #e60000; /* Bold red text for list items */
+        }
+      </style>
+    </head>
+    <body>
+      <h1>Pacenote Sync Widget</h1>
+      <div id="status-container">
+        <div class="status-item">
+          <strong>WebSocket URL:</strong>
+          <span id="ws-url">Not available</span>
+        </div>
+        <div class="status-item">
+          <strong>Folder Path:</strong>
+          <span id="folder-path">Not set</span>
+          <button onclick="window.requestFolder()">Set Folder Path</button>
+        </div>
+      </div>
+      <h2>Connected Devices</h2>
+      <ul id="device-list">
+        <li>None</li>
+      </ul>
+      <h2>Files Found In RBR Folder</h2>
+      <ul id="file-list">
+        <li>None</li>
+      </ul>
+      <script>
+        const { ipcRenderer } = require('electron');
+        ipcRenderer.on('status-update', (event, data) => {
+          document.getElementById('ws-url').innerText = data.wsUrl || 'Not available';
+          document.getElementById('folder-path').innerText = 'Folder Path: ' + (data.folderPath || 'Not set');
+          document.getElementById('device-list').innerHTML = data.connectedDevices.length
+            ? data.connectedDevices.map(device => '<li>' + device + '</li>').join('')
+            : '<li>None</li>';
+          document.getElementById('file-list').innerHTML = data.fileStatus.length
+            ? data.fileStatus.map(file => '<li>' + file + '</li>').join('')
+            : '<li>None</li>';
+        });
+  
+        window.requestFolder = () => {
+          ipcRenderer.send('request-folder');
+        };
+      </script>
+    </body>
+  </html>
+  `;
+  
+  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+  
 
   ipcMain.on('request-folder', async () => {
     const result = dialog.showOpenDialogSync(mainWindow, {
