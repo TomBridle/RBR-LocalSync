@@ -3,17 +3,23 @@
   "version": "1.0.0",
   "description": "Local sync app with WebSocket and .ini file monitoring",
   "main": "index.js",
+  "author": "Tom Bridle",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "package-win": "electron-packager . MyAppName --platform=win32 --arch=x64 --out=release-builds --icon=assets/icon.ico",
+    "dist": "electron-builder --win"
   },
   "dependencies": {
     "bonjour": "^3.5.0",
     "chokidar": "^3.5.2",
-    "electron": "^13.1.7",
-    "firebase": "^11.0.1",
     "ini": "^2.0.0",
     "node-fetch": "^2.7.0",
     "sqlite3": "^5.1.7",
     "ws": "^7.4.6"
+  },
+  "devDependencies": {
+    "electron": "^13.6.9",
+    "electron-builder": "^25.1.8",
+    "electron-packager": "^17.1.2"
   }
 }
