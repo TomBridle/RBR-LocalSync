@@ -6,20 +6,47 @@
   "author": "Tom Bridle",
   "scripts": {
     "start": "electron .",
-    "package-win": "electron-packager . MyAppName --platform=win32 --arch=x64 --out=release-builds --icon=assets/icon.ico",
-    "dist": "electron-builder --win"
+    "package-win": "electron-packager . Pacenote Sync --platform=win32 --arch=x64 --out=release-builds --icon=assets/icon.ico",
+    "dist": "electron-builder --win",
+    "build": "electron-builder"
+  },
+  "build": {
+    "appId": "pacenotesync.app.id",
+    "productName": "Pacenote Sync",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.js",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      "assets/icon.ico"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   },
   "dependencies": {
     "bonjour": "^3.5.0",
     "chokidar": "^3.5.2",
+    "fs-extra": "^11.2.0",
     "ini": "^2.0.0",
-    "node-fetch": "^2.7.0",
     "sqlite3": "^5.1.7",
     "ws": "^7.4.6"
   },
   "devDependencies": {
     "electron": "^13.6.9",
-    "electron-builder": "^25.1.8",
-    "electron-packager": "^17.1.2"
+    "electron-builder": "^25.1.8"
   }
 }

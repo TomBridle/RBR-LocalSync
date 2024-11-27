@@ -16,6 +16,9 @@ let folderPath = null;
 let configFilePath; // Set this after app is ready
 let db; // Initialize db variable here
 
+// **Added variable to keep track of the WebSocket client requesting drag-and-drop**
+let wsClient; // WebSocket client requesting drag-and-drop
+
 // Helper function to get the local network IP address
 function getLocalIPAddress() {
   const interfaces = os.networkInterfaces();
@@ -178,29 +181,57 @@ app.on('ready', () => {
           border-radius: 4px;
           color: #e60000; /* Bold red text for list items */
         }
+        /* Styles for drag-drop-area */
+        #drag-drop-area {
+          width: 100%;
+          height: 100%;
+          border: 2px dashed #e60000;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+        }
+        #drag-drop-area p {
+          font-size: 24px;
+          color: #fff;
+        }
+        #drag-drop-area.dragover {
+          background-color: rgba(230, 0, 0, 0.5);
+        }
       </style>
     </head>
     <body>
-      <h1>Pacenote Sync Widget</h1>
-      <div id="status-container">
-        <div class="status-item">
-          <strong>WebSocket URL:</strong>
-          <span id="ws-url">Not available</span>
+      <!-- Main content -->
+      <div id="main-content">
+        <h1>Pacenote Sync Widget</h1>
+        <div id="status-container">
+          <div class="status-item">
+            <strong>WebSocket URL:</strong>
+            <span id="ws-url">Not available</span>
+          </div>
+          <div class="status-item">
+            <strong>Folder Path:</strong>
+            <span id="folder-path">Not set</span>
+            <button onclick="window.requestFolder()">Set Folder Path</button>
+          </div>
         </div>
-        <div class="status-item">
-          <strong>Folder Path:</strong>
-          <span id="folder-path">Not set</span>
-          <button onclick="window.requestFolder()">Set Folder Path</button>
-        </div>
+        <h2>Connected Devices</h2>
+        <ul id="device-list">
+          <li>None</li>
+        </ul>
+        <h2>Files Found In RBR Folder</h2>
+        <ul id="file-list">
+          <li>None</li>
+        </ul>
       </div>
-      <h2>Connected Devices</h2>
-      <ul id="device-list">
-        <li>None</li>
-      </ul>
-      <h2>Files Found In RBR Folder</h2>
-      <ul id="file-list">
-        <li>None</li>
-      </ul>
+
+      <!-- Added drag-and-drop content -->
+      <div id="drag-drop-content" style="display: none;">
+        <div id="drag-drop-area">
+          <p>Drop .SYM files here</p>
+        </div>
+        <button id="back-button">Back</button>
+      </div>
+
       <script>
         const { ipcRenderer } = require('electron');
         ipcRenderer.on('status-update', (event, data) => {
@@ -217,6 +248,49 @@ app.on('ready', () => {
         window.requestFolder = () => {
           ipcRenderer.send('request-folder');
         };
+
+        // **Added IPC communication for mode switching**
+        ipcRenderer.on('switch-mode', (event, mode) => {
+          if (mode === 'drag-drop') {
+            document.getElementById('main-content').style.display = 'none';
+            document.getElementById('drag-drop-content').style.display = 'block';
+          } else if (mode === 'normal') {
+            document.getElementById('main-content').style.display = 'block';
+            document.getElementById('drag-drop-content').style.display = 'none';
+          }
+        });
+
+        // **Added drag-and-drop functionality**
+        const dragDropArea = document.getElementById('drag-drop-area');
+
+        dragDropArea.addEventListener('dragover', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dragDropArea.classList.add('dragover');
+        });
+
+        dragDropArea.addEventListener('dragleave', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dragDropArea.classList.remove('dragover');
+        });
+
+        dragDropArea.addEventListener('drop', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dragDropArea.classList.remove('dragover');
+
+          const files = event.dataTransfer.files;
+          if (files.length > 0) {
+            const filePath = files[0].path;
+            ipcRenderer.send('file-dropped', filePath);
+          }
+        });
+
+        // **Added back button functionality**
+        document.getElementById('back-button').addEventListener('click', () => {
+          ipcRenderer.send('switch-to-normal');
+        });
       </script>
     </body>
   </html>
@@ -239,7 +313,27 @@ app.on('ready', () => {
     }
   });
 
-  
+  // **Added listener for 'file-dropped' event**
+  ipcMain.on('file-dropped', (event, filePath) => {
+    fs.readFile(filePath, 'utf-8', (err, data) => {
+      if (err) {
+        console.error('Error reading file:', err);
+        return;
+      }
+
+      if (wsClient) {
+        wsClient.send(JSON.stringify({ type: 'file-content', content: data }));
+      }
+
+      // Send IPC message to switch back to normal mode
+      mainWindow.webContents.send('switch-mode', 'normal');
+    });
+  });
+
+  // **Added listener for 'switch-to-normal' event**
+  ipcMain.on('switch-to-normal', () => {
+    mainWindow.webContents.send('switch-mode', 'normal');
+  });
 
   if (folderPath) {
     startWatchingFolder(folderPath);
@@ -273,7 +367,6 @@ function startWatchingFolder(rootPath) {
 
 // Rest of your WebSocket and database functions remain unchanged
 
-
 function broadcastFileToClients(filePath, rootPath) {
   const pacenoteRoot = path.join(rootPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes'); // Root path of MyPacenotes
 
@@ -306,6 +399,7 @@ function broadcastFileToClients(filePath, rootPath) {
     };
 
     Object.keys(clients).forEach(deviceId => {
+      if (!clientFiles[deviceId]) clientFiles[deviceId] = new Set();
       if (!clientFiles[deviceId].has(filePath)) {
         sendToClient(deviceId, jsonContent);
         clientFiles[deviceId].add(filePath);
@@ -319,9 +413,6 @@ function broadcastFileToClients(filePath, rootPath) {
   }
 }
 
-
-
-
 // WebSocket server handling connections
 wss.on('connection', (ws) => {
   console.log('Client connected');
@@ -330,7 +421,12 @@ wss.on('connection', (ws) => {
     try {
       const data = JSON.parse(message);
 
-      if (data.type === 'getStageTimes' && data.RaceDate) {
+      // **Added handling for 'show-drag-area' command**
+      if (data.command === 'show-drag-area') {
+        wsClient = ws; // Save the WebSocket client that requested the drag-and-drop
+        // Send IPC message to switch to drag-drop mode
+        mainWindow.webContents.send('switch-mode', 'drag-drop');
+      } else if (data.type === 'getStageTimes' && data.RaceDate) {
         getStageTimesAfterDate(data.RaceDate, (stageTimes) => {
           ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
         });
@@ -342,7 +438,7 @@ wss.on('connection', (ws) => {
         if (!clientFiles[deviceId]) {
           clientFiles[deviceId] = new Set();
         }
-
+        sendAllFilesToClient(deviceId)
         sendMissingFiles(deviceId);
         updateStatus();
       } else {
@@ -356,6 +452,11 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log('Client disconnected');
     
+    // **Clear wsClient if it matches the disconnected client**
+    if (ws === wsClient) {
+      wsClient = null;
+    }
+
     for (const [deviceId, clientWs] of Object.entries(clients)) {
       if (clientWs === ws) {
         console.log(`Device ID ${deviceId} disconnected`);
@@ -390,8 +491,7 @@ function getStageTimesAfterDate(raceDate, raceDateTime, callback) {
     callback(rows);
   });
 }
-// WebSocket server handling connections
-// New function to send all available .ini files to a specific client
+
 // Function to send all available .ini files to a specific client
 function sendAllFilesToClient(deviceId) {
   const client = clients[deviceId];
@@ -406,7 +506,7 @@ function sendAllFilesToClient(deviceId) {
   files.forEach((file) => {
     const filePath = path.join(pacenotePath, file);
     if (file.endsWith('.ini') && fs.existsSync(filePath)) {
-      const relativePath = path.relative(folderPath, filePath);
+      const relativePath = path.relative(pacenotePath, filePath);
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const parsedContent = ini.parse(fileContent);
 
@@ -420,93 +520,6 @@ function sendAllFilesToClient(deviceId) {
   });
 
   console.log(`Resent all available files to device ${deviceId}`);
-}
-
-// Modify the WebSocket message handler to include the 'sendFiles' message handling
-wss.on('connection', (ws) => {
-  console.log('Client connected');
-
-  ws.on('message', (message) => {
-    try {
-      const data = JSON.parse(message);
-
-      if (data.deviceId && data.sendNotes) {
-        console.log('send and deviceid received');
-        const deviceId = data.deviceId;
-        if (!clientFiles[deviceId]) {
-          clientFiles[deviceId] = new Set();
-        }
-        sendAllFilesToClient(deviceId); // Resend all files to the client
-      } else if (data.type === 'getStageTimes' && typeof data.RaceDate === 'number' && typeof data.RaceDateTime === 'number') {
-        getStageTimesAfterDate(data.RaceDate, data.RaceDateTime, (stageTimes) => {
-          console.log("Sending stage times to client:", JSON.stringify(stageTimes));
-          ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
-        });
-      } else if (data.deviceId) {
-        const deviceId = data.deviceId;
-        clients[deviceId] = ws;
-        if (!clientFiles[deviceId]) {
-          clientFiles[deviceId] = new Set();
-        }
-        sendMissingFiles(deviceId);
-        updateStatus();
-      } else {
-        console.log('Received message with unknown type or missing deviceId:', message);
-      }
-    } catch (e) {
-      console.error('Error parsing message:', e);
-    }
-  });
-
-  ws.on('close', () => {
-    console.log('Client disconnected');
-    for (const [deviceId, clientWs] of Object.entries(clients)) {
-      if (clientWs === ws) {
-        console.log(`Device ID ${deviceId} disconnected`);
-        delete clients[deviceId];
-        updateStatus();
-        break;
-      }
-    }
-  });
-});
-
-
-
-
-function broadcastFileToClients(filePath) {
-  if (!filePath.endsWith('.ini')) {
-    console.log(`Skipping non-.ini file: ${filePath}`);
-    return;
-  }
-
-  if (sentFiles.has(filePath)) {
-    console.log(`File ${filePath} has already been sent. Skipping.`);
-    return;
-  }
-
-  try {
-    const relativePath = path.relative(folderPath, filePath); // Make path relative to folderPath
-    const fileContent = fs.readFileSync(filePath, 'utf-8');
-    const parsedContent = ini.parse(fileContent);
-
-    const jsonContent = {
-      path: relativePath,
-      data: parsedContent
-    };
-
-    Object.keys(clients).forEach(deviceId => {
-      if (!clientFiles[deviceId].has(filePath)) {
-        sendToClient(deviceId, jsonContent);
-        clientFiles[deviceId].add(filePath);
-      }
-    });
-
-    sentFiles.add(filePath);
-    updateStatus();
-  } catch (error) {
-    console.error('Error reading or parsing .ini file:', error);
-  }
 }
 
 function sendToClient(deviceId, jsonContent) {
@@ -532,7 +545,6 @@ function sendMissingFiles(deviceId) {
     }
   });
 }
-
 
 app.on('before-quit', () => {
   bonjour.unpublishAll(() => {
