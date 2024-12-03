@@ -420,14 +420,16 @@ wss.on('connection', (ws) => {
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-
+      console.log('Received message:', data);
       // **Added handling for 'show-drag-area' command**
       if (data.command === 'show-drag-area') {
         wsClient = ws; // Save the WebSocket client that requested the drag-and-drop
         // Send IPC message to switch to drag-drop mode
         mainWindow.webContents.send('switch-mode', 'drag-drop');
-      } else if (data.type === 'getStageTimes' && data.RaceDate) {
-        getStageTimesAfterDate(data.RaceDate, (stageTimes) => {
+      } else if (data.type === 'getStageTimes' && data.RaceDate !== undefined) {
+        console.log('Received request for stage times after date:', data.RaceDate, data.RaceDateTime);
+        getStageTimesAfterDate(data.RaceDate, data.RaceDateTime, (stageTimes) => {
+          console.log('Sending stage times:', stageTimes);
           ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
         });
       } else if (data.deviceId) {
@@ -469,28 +471,68 @@ wss.on('connection', (ws) => {
 });
 
 function getStageTimesAfterDate(raceDate, raceDateTime, callback) {
-  // Concatenate date and time fields and compare as a single integer value
-  const query = `
-    SELECT * FROM F_RallyResult 
-    WHERE CAST(RaceDate || RaceDateTime AS INTEGER) > CAST(? AS INTEGER)
-  `;
-
   // Combine RaceDate and RaceDateTime as a single value for comparison
   const combinedDateTime = `${raceDate}${raceDateTime}`;
   console.log(`Executing query for combined datetime: ${combinedDateTime}`);
-  
-  db.all(query, [combinedDateTime], (err, rows) => {
-    if (err) {
-      console.error('Error querying stage times:', err);
-      callback([]);
-      return;
-    }
 
-    // Log and pass back the query results
-    console.log("Query results:", JSON.stringify(rows, null, 2));
-    callback(rows);
+  // SQL Query
+  const query = `
+      SELECT
+          FRR.RaceKey,
+          FRR.RaceDate,
+          FRR.RaceDateTime,
+          C.CarID AS CarKey,
+          M.MapID AS MapKey,
+          FRR.Split1Time,
+          FRR.Split2Time,
+          FRR.FinishTime,
+          FRR.FalseStartPenaltyTime,
+          FRR.OtherPenaltyTime,
+          FRR.FalseStart,
+          FRR.CallForHelp,
+          FRR.TransmissionType,
+          FRR.TyreType,
+          FRR.TyreSubType,
+          FRR.DamageType,
+          FRR.TimeOfDay,
+          FRR.WeatherType,
+          FRR.SkyCloudType,
+          FRR.SkyType,
+          FRR.SurfaceWetness,
+          FRR.SurfaceAge,
+          FRR.ProfileName,
+          FRR.PluginType,
+          FRR.PluginSubType,
+          FRR.RallyName,
+          FRR.CarSlot,
+          FRR.SetupFileName,
+          FRR.CutPenaltyTime
+      FROM
+          F_RallyResult FRR
+      INNER JOIN
+          D_Map M ON FRR.MapKey = M.MapKey
+      INNER JOIN
+          D_Car C ON FRR.CarKey = C.CarKey
+      WHERE
+          CAST(FRR.RaceDate || FRR.RaceDateTime AS INTEGER) > CAST(? AS INTEGER)
+          AND FRR.FinishTime IS NOT NULL
+      ORDER BY
+          FRR.RaceKey DESC;
+  `;
+
+  // Execute the query
+  db.all(query, [combinedDateTime], (err, rows) => {
+      if (err) {
+          console.error('Error querying stage times:', err);
+          callback(null); // Pass null to the callback in case of error
+          return;
+      }
+
+      console.log('Query results:', rows);
+      callback(rows); // Pass the query results to the callback
   });
 }
+
 
 // Function to send all available .ini files to a specific client
 function sendAllFilesToClient(deviceId) {
