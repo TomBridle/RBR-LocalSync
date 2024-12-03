@@ -43,14 +43,14 @@ Object.keys(map1).forEach(name => {
             differences.push({ name, id_file1: entry1.id, id_file2: entry2.id, differences: diff });
         }
     } else {
-        uniqueTo1.push(name);
+        uniqueTo1.push({ name, id: map1[name].id || 'N/A' });
     }
 });
 
 // Find names unique to file2
 Object.keys(map2).forEach(name => {
     if (!map1[name]) {
-        uniqueTo2.push(name);
+        uniqueTo2.push({ name, id: map2[name].id || 'N/A' });
     }
 });
 
@@ -75,15 +75,15 @@ if (differences.length > 0) {
 }
 
 if (uniqueTo1.length > 0) {
-    console.log(chalk.green('Names unique to file1:'));
-    uniqueTo1.forEach(name => console.log(chalk.red(`  ${name}`)));
-    uniqueTo1.forEach(id => console.log(chalk.red(`  ${id}`)));
-
+    console.log(chalk.green('Names unique to janne'));
+    uniqueTo1.forEach(({ name, id }) => {
+        console.log(chalk.red(`  Name: ${name}, ID: ${id}`));
+    });
 }
 
 if (uniqueTo2.length > 0) {
-    console.log(chalk.green('Names unique to file2:'));
-    uniqueTo2.forEach(name => console.log(chalk.blue(`  ${name}`)));
-    uniqueTo2.forEach(id => console.log(chalk.blue(`  ${id}`)));
-
+    console.log(chalk.green('Names unique to default:'));
+    uniqueTo2.forEach(({ name, id }) => {
+        console.log(chalk.blue(`  Name: ${name}, ID: ${id}`));
+    });
 }
