@@ -392,10 +392,14 @@ function broadcastFileToClients(filePath, rootPath) {
 
     const fileContent = fs.readFileSync(filePath, 'utf-8');
     const parsedContent = ini.parse(fileContent);
+    const stats = fs.statSync(filePath);
+    const lastModified = stats.mtime.toISOString(); 
+    //console.log(`Modified: ${lastModified}`);
 
     const jsonContent = {
       path: relativePath, // Only the relative path within MyPacenotes
-      data: parsedContent
+      data: parsedContent,
+      date: lastModified
     };
 
     Object.keys(clients).forEach(deviceId => {
@@ -552,11 +556,20 @@ function sendAllFilesToClient(deviceId) {
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const parsedContent = ini.parse(fileContent);
 
+
+      const stats = fs.statSync(filePath);
+      const lastModified = stats.mtime.toISOString(); 
+
+
+      //console.log(`Modified: ${lastModified} for file ${relativePath}`);
+
+
       const jsonContent = {
         path: relativePath,
-        data: parsedContent
+        data: parsedContent,
+        date: lastModified
       };
-
+      console.log(jsoncontent.date);
       sendToClient(deviceId, jsonContent); // Send each .ini file to the client
     }
   });
@@ -568,7 +581,8 @@ function sendToClient(deviceId, jsonContent) {
   const client = clients[deviceId];
   if (client && client.readyState === WebSocket.OPEN) {
     client.send(JSON.stringify(jsonContent));
-    console.log(`Sent file to device ${deviceId}:`, jsonContent);
+    console.log(`Sending file with modified date: ${jsonContent.date}`);
+    //console.log(`Sent file to device ${deviceId}:`, jsonContent);
   }
 }
 
@@ -578,10 +592,15 @@ function sendMissingFiles(deviceId) {
 
   sentFiles.forEach(filePath => {
     const relativePath = path.relative(folderPath, filePath);
+    const stats = fs.statSync(filePath);
+    const lastModified = stats.mtime.toISOString(); 
+
+
     if (!clientFiles[deviceId].has(filePath)) {
       sendToClient(deviceId, {
         path: relativePath,
-        data: ini.parse(fs.readFileSync(filePath, 'utf-8'))
+        data: ini.parse(fs.readFileSync(filePath, 'utf-8')),
+        date: lastModified
       });
       clientFiles[deviceId].add(filePath);
     }
