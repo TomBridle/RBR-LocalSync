@@ -15,6 +15,7 @@ function parsePacenoteFile(filePath, pacenoteType) {
 
     const pacenotes = [];
     const keyOrder = ["id", "sounds", "snd0", "snd1", "column", "link"];
+    const fileName = path.basename(filePath); // Get the .ini file name
 
     for (const section in config) {
         if (section.startsWith("PACENOTE::")) {
@@ -25,6 +26,7 @@ function parsePacenoteFile(filePath, pacenoteType) {
             }, {});
             values["name"] = name;
             values["type"] = pacenoteType; // Add the pacenote type
+            values["source"] = fileName; // Include the source .ini file name
             pacenotes.push(values);
         }
     }
@@ -32,23 +34,38 @@ function parsePacenoteFile(filePath, pacenoteType) {
     return pacenotes;
 }
 
+// Determine the type from the folder name of the referenced file
+function determineTypeFromPath(filePath, baseDir) {
+    const relativePath = path.relative(baseDir, filePath); // Get the path relative to the base directory
+    const folders = relativePath.split(path.sep); // Split into folder segments
+    return folders.length > 1 ? folders[0] : "UNKNOWN"; // Use the first folder down from the base
+}
+
 // Recursively process all `.ini` files referenced in `[PACKAGE::...]` or `[CATEGORY::...]` sections
 function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN") {
-    if (visitedFiles.has(filePath)) {
+    const resolvedFilePath = path.resolve(baseDir, filePath);
+
+    if (visitedFiles.has(resolvedFilePath)) {
         return []; // Skip already processed files
     }
 
-    console.log(`Processing INI file: ${filePath}`);
-    visitedFiles.add(filePath);
+    console.log(`Processing INI file: ${resolvedFilePath}`);
+    visitedFiles.add(resolvedFilePath);
 
-    if (!fs.existsSync(filePath)) {
-        throw new Error(`File not found: ${filePath}`);
+    if (!fs.existsSync(resolvedFilePath)) {
+        throw new Error(`File not found: ${resolvedFilePath}`);
     }
 
-    const iniContent = fs.readFileSync(filePath, "utf-8");
+    const iniContent = fs.readFileSync(resolvedFilePath, "utf-8");
     const config = ini.parse(iniContent);
 
     const pacenotes = [];
+
+    // Determine type from folder name if not explicitly provided
+    if (pacenoteType === "UNKNOWN") {
+        pacenoteType = determineTypeFromPath(resolvedFilePath, baseDir);
+        console.log(`Derived pacenote type from folder: ${pacenoteType}`);
+    }
 
     // Process `[PACKAGE::...]` sections for references
     for (const section in config) {
@@ -59,13 +76,10 @@ function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN") {
             for (const key in packageSection) {
                 if (key.startsWith("file")) {
                     const relativePath = packageSection[key]?.replace("\\", "/");
-                    const fullPath = path.resolve(baseDir, relativePath);
-
-                    if (fs.existsSync(fullPath)) {
+                    if (relativePath) {
+                        const fullPath = path.resolve(baseDir, relativePath);
                         console.log(`Parsing referenced file from PACKAGE: ${fullPath}`);
-                        pacenotes.push(...processIniFile(fullPath, path.dirname(fullPath), packageType));
-                    } else {
-                        console.warn(`Referenced file not found: ${fullPath}`);
+                        pacenotes.push(...processIniFile(fullPath, baseDir, packageType));
                     }
                 }
             }
@@ -79,19 +93,14 @@ function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN") {
             const relativePath = categorySection?.file?.replace("\\", "/");
             if (relativePath) {
                 const fullPath = path.resolve(baseDir, relativePath);
-
-                if (fs.existsSync(fullPath)) {
-                    console.log(`Parsing referenced file from CATEGORY: ${fullPath}`);
-                    pacenotes.push(...processIniFile(fullPath, path.dirname(fullPath), pacenoteType));
-                } else {
-                    console.warn(`Referenced CATEGORY file not found: ${fullPath}`);
-                }
+                console.log(`Parsing referenced file from CATEGORY: ${fullPath}`);
+                pacenotes.push(...processIniFile(fullPath, baseDir, pacenoteType));
             }
         }
     }
 
     // Parse PACENOTE sections in the current file
-    pacenotes.push(...parsePacenoteFile(filePath, pacenoteType));
+    pacenotes.push(...parsePacenoteFile(resolvedFilePath, pacenoteType));
 
     return pacenotes;
 }
@@ -127,8 +136,8 @@ function exportJsonResults(pacenotes, outputFilePath) {
 
 // Example usage
 try {
-    const baseDir = "E:/Richard Burns Rally/Plugins/Pacenote/config/pacenotes"; // Adjust to the actual directory
-    const outputFilePath = "E:/Richard Burns Rally/Plugins/Pacenote/config/pacenotes.json";
+    const baseDir = "/Users/macmini/Richard Burns Rally/Plugins/Pacenote/config/pacenotes/packages"; // Adjust to the actual directory
+    const outputFilePath = "/Users/macmini/Richard Burns Rally/Plugins/Pacenote/config/pacenotes.json";
 
     console.log(`Starting processing for directory: ${baseDir}`);
     const pacenotes = processAllIniFiles(baseDir);
@@ -142,7 +151,3 @@ try {
 } catch (error) {
     console.error("Error:", error.message);
 }
-
-
-// const baseDir = "C:/Richard Burns Rally/Plugins/Pacenote/config/pacenotes"; // Update to the actual base directory
-//     console.log(`Starting processing for directory: ${baseDir}`);
