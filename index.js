@@ -425,14 +425,16 @@ wss.on('connection', (ws) => {
     try {
       const data = JSON.parse(message);
       console.log('Received message:', data);
+      console.log('Parsed message:', data);
+
       // **Added handling for 'show-drag-area' command**
       if (data.command === 'show-drag-area') {
         wsClient = ws; // Save the WebSocket client that requested the drag-and-drop
         // Send IPC message to switch to drag-drop mode
         mainWindow.webContents.send('switch-mode', 'drag-drop');
-      } else if (data.type === 'getStageTimes' && data.RaceDate !== undefined) {
-        console.log('Received request for stage times after date:', data.RaceDate, data.RaceDateTime);
-        getStageTimesAfterDate(data.RaceDate, data.RaceDateTime, (stageTimes) => {
+      } else if (data.type === 'getStageTimes' && data.slotId !== undefined) {
+        console.log('Received request for stage times for slotId:', data.slotId);
+        getStageTimesAfterDate(data.stageId, data.slotId, folderPath, (stageTimes) => {
           console.log('Sending stage times:', stageTimes);
           ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
         });
@@ -474,60 +476,69 @@ wss.on('connection', (ws) => {
   });
 });
 
-function getStageTimesAfterDate(raceDate, raceDateTime, callback) {
-  // Combine RaceDate and RaceDateTime as a single value for comparison
-  const combinedDateTime = `${raceDate}${raceDateTime}`;
-  console.log(`Executing query for combined datetime: ${combinedDateTime}`);
+function getStageTimesAfterDate(stageId, slotId, folderPath, callback) {
+
+    const carsIniPath = path.join(folderPath, 'Cars', 'Cars.ini');
+
+    if (!fs.existsSync(carsIniPath)) {
+        return { error: `Cars.ini file not found at path: ${carsIniPath}` };
+    }
+
+    // Parse the Cars.ini file
+    const config = ini.parse(fs.readFileSync(carsIniPath, 'utf-8'));
+    const section = `Car0${slotId}`;
+
+    // Check if the section exists
+    if (!config[section]) {
+        return { error: `Car slot ID ${slotId} not found in Cars.ini` };
+    }
+
+    // Check if the RSFCarID is present
+    if (!config[section].RSFCarID) {
+        return { error: `RSFCarID not found for slot ID ${slotId}` };
+    }
+
+    carId = parseInt(config[section].RSFCarID, 10);
+
+  console.log(`Executing query for car ${carId} on stage ${stageId}`);
 
   // SQL Query
   const query = `
-      SELECT
-          FRR.RaceKey,
-          FRR.RaceDate,
-          FRR.RaceDateTime,
-          C.CarID AS CarKey,
-          M.MapID AS MapKey,
-          FRR.Split1Time,
-          FRR.Split2Time,
-          FRR.FinishTime,
-          FRR.FalseStartPenaltyTime,
-          FRR.OtherPenaltyTime,
-          FRR.FalseStart,
-          FRR.CallForHelp,
-          FRR.TransmissionType,
-          FRR.TyreType,
-          FRR.TyreSubType,
-          FRR.DamageType,
-          FRR.TimeOfDay,
-          FRR.WeatherType,
-          FRR.SkyCloudType,
-          FRR.SkyType,
-          FRR.SurfaceWetness,
-          FRR.SurfaceAge,
-          FRR.ProfileName,
-          FRR.PluginType,
-          FRR.PluginSubType,
-          FRR.RallyName,
-          FRR.CarSlot,
-          FRR.SetupFileName,
-          FRR.CutPenaltyTime
-      FROM
-          F_RallyResult FRR
-      INNER JOIN
-          D_Map M ON FRR.MapKey = M.MapKey
-      INNER JOIN
-          D_Car C ON FRR.CarKey = C.CarKey
-      WHERE
-          CAST(FRR.RaceDate || FRR.RaceDateTime AS INTEGER) > CAST(? AS INTEGER)
-          AND FRR.FinishTime IS NOT NULL
-      ORDER BY
-          FRR.RaceKey DESC;
+    SELECT 
+    FRR.RaceDate, 
+    FRR.RaceDateTime, 
+    FRR.RallyName, 
+    M.MapID AS StageID, 
+    M.StageName, 
+    FRR.Split1Time, -- Add Split1Time to the result
+    FRR.Split2Time, -- Add Split2Time to the result
+    FRR.FinishTime AS FastestStageTime,
+    M.Format AS StageFormat, 
+    M.Length AS StageLength, 
+    C.CarID, 
+    C.ModelName AS CarModel, 
+    C.FIACategory AS FIACat,
+    (FRR.FalseStartPenaltyTime + FRR.CutPenaltyTime + FRR.OtherPenaltyTime) AS TotalPenaltyTime
+FROM 
+    F_RallyResult FRR
+JOIN 
+    D_Map M ON FRR.MapKey = M.MapKey
+JOIN 
+    D_Car C ON FRR.CarKey = C.CarKey
+WHERE 
+    FRR.FinishTime IS NOT NULL 
+    AND M.MapID = ? 
+    AND C.CarID = ?  
+ORDER BY 
+    FRR.FinishTime ASC
+LIMIT 1;
+
   `;
 
   // Execute the query
-  db.all(query, [combinedDateTime], (err, rows) => {
+  db.all(query, [stageId, carId], (err, rows) => {
       if (err) {
-          console.error('Error querying stage times:', err);
+          console.error('Database error:', err);
           callback(null); // Pass null to the callback in case of error
           return;
       }
