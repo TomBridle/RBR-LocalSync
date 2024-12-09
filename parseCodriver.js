@@ -14,7 +14,7 @@ function parsePacenoteFile(filePath, pacenoteType) {
     const config = ini.parse(iniContent);
 
     const pacenotes = [];
-    const keyOrder = ["id", "sounds", "snd0", "snd1", "column", "link"];
+    const keyOrder = ["id", "column", "link"];
     const fileName = path.basename(filePath); // Get the .ini file name
 
     for (const section in config) {
