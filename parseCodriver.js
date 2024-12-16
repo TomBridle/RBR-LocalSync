@@ -26,7 +26,7 @@ function parsePacenoteFile(filePath, pacenoteType) {
             }, {});
             values["name"] = name;
             values["type"] = pacenoteType; // Add the pacenote type
-            values["source"] = fileName; // Include the source .ini file name
+            values["source"] = fileName.replace(".ini", ""); // Include the source .ini file name
             pacenotes.push(values);
         }
     }
@@ -105,6 +105,27 @@ function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN") {
     return pacenotes;
 }
 
+// Process and organize the pacenotes into the desired JSON format
+function organizePacenotes(pacenotes) {
+    const cornerTypes = {};
+    const standardNotes = [];
+
+    for (const pacenote of pacenotes) {
+        const { type, source } = pacenote;
+
+        if (type === "corners") {
+            if (!cornerTypes[source]) {
+                cornerTypes[source] = [];
+            }
+            cornerTypes[source].push(pacenote);
+        } else {
+            standardNotes.push(pacenote);
+        }
+    }
+
+    return { cornerTypes, standardNotes };
+}
+
 // Process all `.ini` files in the base directory
 function processAllIniFiles(directoryPath) {
     console.log(`Processing all INI files in directory: ${directoryPath}`);
@@ -136,16 +157,17 @@ function exportJsonResults(pacenotes, outputFilePath) {
 
 // Example usage
 try {
-    const baseDir = "/Users/macmini/Richard Burns Rally/Plugins/Pacenote/config/pacenotes/packages"; // Adjust to the actual directory
-    const outputFilePath = "/Users/macmini/Richard Burns Rally/Plugins/Pacenote/config/pacenotes.json";
+    const baseDir = "E:/Richard Burns Rally/Plugins/Pacenote/config/pacenotes/packages"; // Adjust to the actual directory
+    const outputFilePath = "E:/Richard Burns Rally/Plugins/Pacenote/config/pacenotes.json";
 
     console.log(`Starting processing for directory: ${baseDir}`);
     const pacenotes = processAllIniFiles(baseDir);
 
-    console.log("Aggregated PACENOTES Data:");
-    console.log(JSON.stringify(pacenotes, null, 2));
+    console.log("Organizing pacenotes...");
+    const organizedPacenotes = organizePacenotes(pacenotes);
 
-    exportJsonResults(pacenotes, outputFilePath);
+    console.log("Exporting pacenotes...");
+    exportJsonResults(organizedPacenotes, outputFilePath);
 
     console.log("Processing complete.");
 } catch (error) {
