@@ -682,11 +682,37 @@ LIMIT 1;
 
 
 // Function to send all available .ini files to a specific client
+function extractStageInfoFromComment(commentLine, filePath) {
+  const regex = /RSF\s*-\s*(.+?)\s*-\s*(\d+)\s*-\s*(\d{8})\s+(\d{6})/;
+  const match = commentLine.match(regex);
+
+  if (!match) return null;
+
+  const stageName = match[1].trim();         // e.g., "NewBobs"
+  const stageId = parseInt(match[2]);        // e.g., 31
+  const dateStr = match[3];                  // e.g., "20250108"
+  const timeStr = match[4];                  // e.g., "211419"
+
+  const createdDate = new Date(
+    `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}T${timeStr.substring(0, 2)}:${timeStr.substring(2, 4)}:${timeStr.substring(4, 6)}`
+  ).toISOString();
+
+  const folderPath = path.dirname(filePath);
+  const author = "RallySimFans.hu";
+
+  return {
+    StageId: stageId,
+    Author: author,
+    StageName: stageName,
+    CreatedDate: createdDate,
+    FolderPath: folderPath,
+  };
+}
+
 function sendAllFilesToClient(deviceId) {
   const client = clients[deviceId];
   if (!client) return;
 
-  // Clear the client's sent files set to resend all files
   clientFiles[deviceId] = new Set();
 
   const pacenotePath = path.join(folderPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes');
@@ -698,27 +724,28 @@ function sendAllFilesToClient(deviceId) {
       const relativePath = path.relative(pacenotePath, filePath);
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const parsedContent = ini.parse(fileContent);
-
-
       const stats = fs.statSync(filePath);
-      const lastModified = stats.mtime.toISOString(); 
+      const lastModified = stats.mtime.toISOString();
 
-
-      //console.log(`Modified: ${lastModified} for file ${relativePath}`);
-
+      // Extract header from the first line
+      const lines = fileContent.split('\n');
+      const firstCommentLine = lines.find(line => line.trim().startsWith(';'));
+      const stageInfo = firstCommentLine ? extractStageInfoFromComment(firstCommentLine, filePath) : null;
 
       const jsonContent = {
         path: relativePath,
         data: parsedContent,
-        date: lastModified
+        date: lastModified,
+        ...(stageInfo ? { stageInfo } : {})
       };
-      console.log(jsonContent.date);
-      sendToClient(deviceId, jsonContent); // Send each .ini file to the client
+
+      sendToClient(deviceId, jsonContent);
     }
   });
 
   console.log(`Resent all available files to device ${deviceId}`);
 }
+
 
 function sendToClient(deviceId, jsonContent) {
   const client = clients[deviceId];
