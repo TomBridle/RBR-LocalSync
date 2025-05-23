@@ -691,35 +691,38 @@ async function loadAllStageMetadata() {
   const res = await axios.get(url);
   const $ = cheerio.load(res.data);
 
-  const stageTable = $('#page-wrap table').filter((i, el) => {
-    return $(el).find('th').first().text().trim() === 'ID';
-  }).first();
+  const tables = $('table');
+  const stageTable = tables.eq(25); // Table #26 (0-based index)
 
   const rows = stageTable.find('tr').slice(1); // Skip header
 
   const result = {};
   rows.each((_, row) => {
     const cols = $(row).find('td');
-    if (cols.length < 6) return;
+    if (cols.length >= 6) {
+      const id = $(cols[0]).text().trim();
+      const name = $(cols[1]).text().trim();
+      const length = $(cols[2]).text().trim().replace(' km', '');
+      const surface = $(cols[4]).text().trim();
+      const author = $(cols[5]).text().trim();
 
-    const id = $(cols[0]).text().trim();
-    const name = $(cols[1]).text().trim().replace(/\s+/g, ' ');
-    const length = $(cols[2]).text().trim().replace(' km', '');
-    const surface = $(cols[4]).text().trim();
-    const author = $(cols[5]).text().trim();
-
-    result[name.toLowerCase()] = {
-      StageId: parseInt(id),
-      StageName: name,
-      Author: author,
-      Length: length,
-      Surface: surface
-    };
+      // Use folder name (lowercased and trimmed) as the key
+      if (name) {
+        result[name.trim().toLowerCase()] = {
+          StageId: parseInt(id),
+          StageName: name,
+          Author: author,
+          Length: length,
+          Surface: surface,
+        };
+      }
+    }
   });
 
-  console.log(`✅ Found ${Object.keys(result).length} stages`);
+  console.log(`✅ Found ${Object.keys(result).length} stages with folders`);
   return result;
 }
+
 
 
 // Infer stage name from the folder path
@@ -739,6 +742,7 @@ async function sendAllFilesToClient(deviceId) {
   const files = fs.readdirSync(pacenotePath);
 
   const stageMetadataMap = await loadAllStageMetadata();
+  console.log('Available stage metadata keys:', Object.keys(stageMetadataMap).slice(0, 10));
 
   for (const file of files) {
     const filePath = path.join(pacenotePath, file);
@@ -749,13 +753,25 @@ async function sendAllFilesToClient(deviceId) {
       const stats = fs.statSync(filePath);
       const lastModified = stats.mtime.toISOString();
 
-      const stageName = inferStageNameFromPath(filePath);
-      const stageInfo = stageMetadataMap[stageName.toLowerCase()];
+      const folderBase = path.basename(path.dirname(filePath));
+      const guessedStageName = folderBase.replace(/_/g, ' ').trim().toLowerCase();
+
+
+      let stageInfo = null;
+      for (const key in stageMetadataMap) {
+        if (key.toLowerCase() === guessedStageName) {
+          stageInfo = stageMetadataMap[key];
+          break;
+        }
+      }
+
+
 
       if (!stageInfo) {
-        console.warn(`⚠️ No metadata found for "${stageName}", skipping ${file}`);
+        console.warn(`⚠️ No metadata found for guessed name "${guessedStageName}", skipping ${file}`);
         continue;
       }
+      
 
       const jsonContent = {
         type: 'file-content',
