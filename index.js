@@ -8,6 +8,9 @@ const bonjour = require('bonjour')();
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const codriverParser = require('./parseCodriver');
+const axios = require('axios');
+const cheerio = require('cheerio');
+
 
 let mainWindow;
 const clients = {}; // Store WebSocket clients by device ID
@@ -682,34 +685,51 @@ LIMIT 1;
 
 
 // Function to send all available .ini files to a specific client
-function extractStageInfoFromComment(commentLine, filePath) {
-  const regex = /RSF\s*-\s*(.+?)\s*-\s*(\d+)\s*-\s*(\d{8})\s+(\d{6})/;
-  const match = commentLine.match(regex);
+// Load all stage metadata from RallySimFans
+async function loadAllStageMetadata() {
+  const url = 'https://www.rallysimfans.hu/rbr/stages.php?lista=3&rendez=stage_id';
+  const res = await axios.get(url);
+  const $ = cheerio.load(res.data);
 
-  if (!match) return null;
+  const stageTable = $('#page-wrap table').filter((i, el) => {
+    return $(el).find('th').first().text().trim() === 'ID';
+  }).first();
 
-  const stageName = match[1].trim();         // e.g., "NewBobs"
-  const stageId = parseInt(match[2]);        // e.g., 31
-  const dateStr = match[3];                  // e.g., "20250108"
-  const timeStr = match[4];                  // e.g., "211419"
+  const rows = stageTable.find('tr').slice(1); // Skip header
 
-  const createdDate = new Date(
-    `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}T${timeStr.substring(0, 2)}:${timeStr.substring(2, 4)}:${timeStr.substring(4, 6)}`
-  ).toISOString();
+  const result = {};
+  rows.each((_, row) => {
+    const cols = $(row).find('td');
+    if (cols.length < 6) return;
 
-  const folderPath = path.dirname(filePath);
-  const author = "RallySimFans.hu";
+    const id = $(cols[0]).text().trim();
+    const name = $(cols[1]).text().trim().replace(/\s+/g, ' ');
+    const length = $(cols[2]).text().trim().replace(' km', '');
+    const surface = $(cols[4]).text().trim();
+    const author = $(cols[5]).text().trim();
 
-  return {
-    StageId: stageId,
-    Author: author,
-    StageName: stageName,
-    CreatedDate: createdDate,
-    FolderPath: folderPath,
-  };
+    result[name.toLowerCase()] = {
+      StageId: parseInt(id),
+      StageName: name,
+      Author: author,
+      Length: length,
+      Surface: surface
+    };
+  });
+
+  console.log(`✅ Found ${Object.keys(result).length} stages`);
+  return result;
 }
 
-function sendAllFilesToClient(deviceId) {
+
+// Infer stage name from the folder path
+function inferStageNameFromPath(filePath) {
+  const folderName = path.basename(filePath).replace(/_/g, ' ').replace('.ini', '').trim();
+  return folderName;
+}
+
+
+async function sendAllFilesToClient(deviceId) {
   const client = clients[deviceId];
   if (!client) return;
 
@@ -718,7 +738,9 @@ function sendAllFilesToClient(deviceId) {
   const pacenotePath = path.join(folderPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes');
   const files = fs.readdirSync(pacenotePath);
 
-  files.forEach((file) => {
+  const stageMetadataMap = await loadAllStageMetadata();
+
+  for (const file of files) {
     const filePath = path.join(pacenotePath, file);
     if (file.endsWith('.ini') && fs.existsSync(filePath)) {
       const relativePath = path.relative(pacenotePath, filePath);
@@ -727,21 +749,28 @@ function sendAllFilesToClient(deviceId) {
       const stats = fs.statSync(filePath);
       const lastModified = stats.mtime.toISOString();
 
-      // Extract header from the first line
-      const lines = fileContent.split('\n');
-      const firstCommentLine = lines.find(line => line.trim().startsWith(';'));
-      const stageInfo = firstCommentLine ? extractStageInfoFromComment(firstCommentLine, filePath) : null;
+      const stageName = inferStageNameFromPath(filePath);
+      const stageInfo = stageMetadataMap[stageName.toLowerCase()];
+
+      if (!stageInfo) {
+        console.warn(`⚠️ No metadata found for "${stageName}", skipping ${file}`);
+        continue;
+      }
 
       const jsonContent = {
+        type: 'file-content',
         path: relativePath,
         data: parsedContent,
         date: lastModified,
-        ...(stageInfo ? { stageInfo } : {})
+        stageInfo: {
+          ...stageInfo,
+          FolderPath: path.dirname(filePath)
+        }
       };
 
       sendToClient(deviceId, jsonContent);
     }
-  });
+  }
 
   console.log(`Resent all available files to device ${deviceId}`);
 }
@@ -751,10 +780,9 @@ function sendToClient(deviceId, jsonContent) {
   const client = clients[deviceId];
   if (client && client.readyState === WebSocket.OPEN) {
     client.send(JSON.stringify(jsonContent));
-    console.log(`Sending file with modified date: ${jsonContent.date}`);
-    console.log(JSON.stringify(jsonContent));
-
-    //console.log(`Sent file to device ${deviceId}:`, jsonContent);
+    
+    console.log(`📦 Sent to device ${deviceId}`);
+    console.log('Stage Info:', JSON.stringify(jsonContent.stageInfo, null, 2));
   }
 }
 
