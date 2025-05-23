@@ -19,7 +19,8 @@
     "files": [
       "index.js",
       "node_modules/**/*",
-      "package.json"
+      "package.json",
+      "parseCodriver.js"
     ],
     "extraResources": [
       "assets/icon.ico"

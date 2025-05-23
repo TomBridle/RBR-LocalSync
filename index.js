@@ -7,6 +7,7 @@ const ini = require('ini');
 const bonjour = require('bonjour')();
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+const codriverParser = require('./parseCodriver');
 
 let mainWindow;
 const clients = {}; // Store WebSocket clients by device ID
@@ -458,7 +459,30 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'replace', status: 'success' }));
     
       // Handle messages that include a deviceId.
-      } else if (data.deviceId) {
+      } else if (data.command === 'getCodrivers') {
+        const codriverDir = path.join(folderPath, 'Plugins', 'Pacenote', 'config', 'pacenotes', 'packages');
+        console.log('getCoDrivers called');
+
+        try {
+
+          console.log('Resolved codriverDir:', codriverDir);
+          console.log('Exists?', fs.existsSync(codriverDir));
+
+          const pacenotes = codriverParser.processAllIniFiles(codriverDir);
+          const organized = codriverParser.organizePacenotes(pacenotes);
+          ws.send(JSON.stringify({
+            type: 'codrivers',
+            data: organized
+          }));
+          console.log('Sent codriver pacenotes to client');
+         // console.log(JSON.stringify(organized, null, 2));
+        } catch (err) {
+          console.error('Failed to parse codriver data:', err.message);
+          ws.send(JSON.stringify({ type: 'codrivers', error: err.message }));
+       
+        }
+      }
+       else if (data.deviceId) {
         const deviceId = data.deviceId;
         clients[deviceId] = ws;
         console.log('Device ID received: ${deviceId}');

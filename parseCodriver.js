@@ -1,7 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const ini = require("ini");
-
+module.exports = {
+    processAllIniFiles,
+    organizePacenotes
+  };
 let visitedFiles = new Set(); // To prevent re-processing of the same file
 
 // Parse a single PACENOTE file and extract `[PACENOTE::...]` sections
@@ -15,24 +18,34 @@ function parsePacenoteFile(filePath, pacenoteType) {
 
     const pacenotes = [];
     const keyOrder = ["id", "column", "link"];
-    const fileName = path.basename(filePath); // Get the .ini file name
+    const fileName = path.basename(filePath);
 
     for (const section in config) {
         if (section.startsWith("PACENOTE::")) {
             const name = section.replace("PACENOTE::", "");
+            const sectionData = config[section];
+
+            // Normalize keys to lowercase for consistent access
+            const normalized = {};
+            for (const key in sectionData) {
+                normalized[key.toLowerCase()] = sectionData[key];
+            }
+
             const values = keyOrder.reduce((acc, key) => {
-                acc[key] = config[section]?.[key] || null;
+                acc[key] = normalized[key] || null;
                 return acc;
             }, {});
+
             values["name"] = name;
-            values["type"] = pacenoteType; // Add the pacenote type
-            values["source"] = fileName.replace(".ini", ""); // Include the source .ini file name
+            values["type"] = pacenoteType;
+            values["source"] = fileName.replace(".ini", "");
             pacenotes.push(values);
         }
     }
 
     return pacenotes;
 }
+
 
 // Determine the type from the folder name of the referenced file
 function determineTypeFromPath(filePath, baseDir) {
@@ -42,7 +55,7 @@ function determineTypeFromPath(filePath, baseDir) {
 }
 
 // Recursively process all `.ini` files referenced in `[PACKAGE::...]` or `[CATEGORY::...]` sections
-function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN") {
+function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN", visitedFiles) {
     const resolvedFilePath = path.resolve(baseDir, filePath);
 
     if (visitedFiles.has(resolvedFilePath)) {
@@ -79,7 +92,7 @@ function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN") {
                     if (relativePath) {
                         const fullPath = path.resolve(baseDir, relativePath);
                         console.log(`Parsing referenced file from PACKAGE: ${fullPath}`);
-                        pacenotes.push(...processIniFile(fullPath, baseDir, packageType));
+                        pacenotes.push(...processIniFile(fullPath, baseDir, packageType, visitedFiles));
                     }
                 }
             }
@@ -94,7 +107,7 @@ function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN") {
             if (relativePath) {
                 const fullPath = path.resolve(baseDir, relativePath);
                 console.log(`Parsing referenced file from CATEGORY: ${fullPath}`);
-                pacenotes.push(...processIniFile(fullPath, baseDir, pacenoteType));
+                pacenotes.push(...processIniFile(fullPath, baseDir, pacenoteType, visitedFiles));
             }
         }
     }
@@ -104,6 +117,7 @@ function processIniFile(filePath, baseDir, pacenoteType = "UNKNOWN") {
 
     return pacenotes;
 }
+
 
 // Process and organize the pacenotes into the desired JSON format
 function organizePacenotes(pacenotes) {
@@ -126,12 +140,13 @@ function organizePacenotes(pacenotes) {
     return { cornerTypes, standardNotes };
 }
 
-// Process all `.ini` files in the base directory
 function processAllIniFiles(directoryPath) {
     console.log(`Processing all INI files in directory: ${directoryPath}`);
     if (!fs.existsSync(directoryPath)) {
         throw new Error(`Directory not found: ${directoryPath}`);
     }
+
+    const visitedFiles = new Set(); // <== Scoped here now
 
     const iniFiles = fs.readdirSync(directoryPath).filter((file) => file.endsWith(".ini"));
     const aggregatedPacenotes = [];
@@ -139,7 +154,7 @@ function processAllIniFiles(directoryPath) {
     iniFiles.forEach((file) => {
         const fullPath = path.join(directoryPath, file);
         try {
-            const pacenotes = processIniFile(fullPath, directoryPath);
+            const pacenotes = processIniFile(fullPath, directoryPath, "UNKNOWN", visitedFiles);
             aggregatedPacenotes.push(...pacenotes);
         } catch (error) {
             console.error(`Error processing ${file}: ${error.message}`);
@@ -148,6 +163,7 @@ function processAllIniFiles(directoryPath) {
 
     return aggregatedPacenotes;
 }
+
 
 // Export aggregated pacenotes to a JSON file
 function exportJsonResults(pacenotes, outputFilePath) {
