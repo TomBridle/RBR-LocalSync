@@ -10,6 +10,7 @@ const sqlite3 = require('sqlite3').verbose();
 const codriverParser = require('./parseCodriver');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const levenshtein = require('fast-levenshtein');
 
 
 let mainWindow;
@@ -409,7 +410,7 @@ function broadcastFileToClients(filePath, rootPath) {
     Object.keys(clients).forEach(deviceId => {
       if (!clientFiles[deviceId]) clientFiles[deviceId] = new Set();
       if (!clientFiles[deviceId].has(filePath)) {
-        sendToClient(deviceId, jsonContent);
+        //sendToClient(deviceId, jsonContent);
         clientFiles[deviceId].add(filePath);
       }
     });
@@ -425,7 +426,7 @@ function broadcastFileToClients(filePath, rootPath) {
 wss.on('connection', (ws) => {
   console.log('Client connected');
   
-  ws.on('message', (message) => {
+  ws.on('message', async (message) => {
     try {
       const data = JSON.parse(message);
       //console.log('Received message:', data);
@@ -493,8 +494,8 @@ wss.on('connection', (ws) => {
         if (!clientFiles[deviceId]) {
           clientFiles[deviceId] = new Set();
         }
-        sendAllFilesToClient(deviceId)
-        sendMissingFiles(deviceId);
+        await sendAllFilesToClient(deviceId)
+        await sendMissingFiles(deviceId);
         updateStatus();
       } 
       else {
@@ -688,115 +689,164 @@ LIMIT 1;
 // Load all stage metadata from RallySimFans
 async function loadAllStageMetadata() {
   const url = 'https://www.rallysimfans.hu/rbr/stages.php?lista=3&rendez=stage_id';
-  const res = await axios.get(url);
-  const $ = cheerio.load(res.data);
+  const data = [];
+  console.log('Loading stage metadata from RallySimFans...');
 
-  const tables = $('table');
-  const stageTable = tables.eq(25); // Table #26 (0-based index)
+  try {
+    const response = await axios.get(url);
+    const $ = cheerio.load(response.data);
 
-  const rows = stageTable.find('tr').slice(1); // Skip header
+    const tables = $('table');
+    const stageTable = tables.eq(25); // Table #26 (0-based index)
+    const rows = stageTable.find('tr').slice(1); // skip header
 
-  const result = {};
-  rows.each((_, row) => {
-    const cols = $(row).find('td');
-    if (cols.length >= 6) {
-      const id = $(cols[0]).text().trim();
-      const name = $(cols[1]).text().trim();
-      const length = $(cols[2]).text().trim().replace(' km', '');
-      const surface = $(cols[4]).text().trim();
-      const author = $(cols[5]).text().trim();
+    rows.each((_, row) => {
+      const cols = $(row).find('td');
+      if (cols.length >= 6) {
+        const div = $(cols[1]).find('div');
+        const onMouseOverAttr = div.attr('onmouseover');
 
-      // Use folder name (lowercased and trimmed) as the key
-      if (name) {
-        result[name.trim().toLowerCase()] = {
-          StageId: parseInt(id),
+        if (!onMouseOverAttr) return;
+
+        const tooltipMatch = onMouseOverAttr.match(/Tip\('(.*?)'\)/);
+        if (!tooltipMatch || tooltipMatch.length < 2) return;
+
+        const tooltipHTML = tooltipMatch[1]
+          .replace(/\\'/g, "'")
+          .replace(/\\"/g, '"')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"');
+
+        const $tooltip = cheerio.load(tooltipHTML);
+        const name = $tooltip('h2').text().trim();
+        const idText = $tooltip('td:contains("ID:")').text().trim();
+        const stageId = parseInt(idText.replace('ID:', '').trim());
+
+        const lengthText = $tooltip('td:contains("Length:")').next().text().trim();
+        const length = parseFloat(lengthText.replace(' km', '').trim());
+
+        const surface = $tooltip('td:contains("Surface:")').next().text().trim();
+        const author = $tooltip('td:contains("Author:")').next().text().trim();
+        const country = $tooltip('td:contains("Country:")').next().text().trim();
+
+        data.push({
+          StageId: stageId,
           StageName: name,
-          Author: author,
-          Length: length,
+          Length: (length * 1000), // convert km to m and round to nearest integer
           Surface: surface,
-        };
+          Author: author,
+          Country: country
+        });
       }
-    }
-  });
+    });
 
-  console.log(`✅ Found ${Object.keys(result).length} stages with folders`);
-  return result;
+    console.log(`✅ Found ${data.length} stages`);
+  } catch (err) {
+    console.error('❌ Failed to scrape stage data:', err.message);
+  }
+
+  return data;
 }
+  
 
 
 
-// Infer stage name from the folder path
-function inferStageNameFromPath(filePath) {
-  const folderName = path.basename(filePath).replace(/_/g, ' ').replace('.ini', '').trim();
-  return folderName;
+
+function normalize(str) {
+  return str.toLowerCase()
+    .normalize("NFD").replace(/\p{Diacritic}/gu, '')  // remove accents
+    .replace(/[^a-z0-9]/g, '');                      // remove symbols/spaces
 }
-
 
 async function sendAllFilesToClient(deviceId) {
   const client = clients[deviceId];
   if (!client) return;
 
+  console.log(`📤 Sending all files to device ${deviceId}...`);
   clientFiles[deviceId] = new Set();
 
   const pacenotePath = path.join(folderPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes');
-  const files = fs.readdirSync(pacenotePath);
+  const stageMetadataList = await loadAllStageMetadata();
 
-  const stageMetadataMap = await loadAllStageMetadata();
-  console.log('Available stage metadata keys:', Object.keys(stageMetadataMap).slice(0, 10));
+  const folders = fs.readdirSync(pacenotePath, { withFileTypes: true }).filter(dirent => dirent.isDirectory());
 
-  for (const file of files) {
-    const filePath = path.join(pacenotePath, file);
-    if (file.endsWith('.ini') && fs.existsSync(filePath)) {
+  for (const folder of folders) {
+    const folderPath = path.join(pacenotePath, folder.name);
+    const folderNameNormalized = normalize(folder.name.trim());
+    console.log(`🔍 Matching for folder: "${folder.name}" → "${folderNameNormalized}"`);
+
+    let stageInfo = null;
+
+    // --- Exact match
+    stageInfo = stageMetadataList.find(s => normalize(s.StageName) === folderNameNormalized);
+    if (stageInfo) console.log(`✅ Exact match: "${stageInfo.StageName}"`);
+
+    // --- StartsWith match
+    if (!stageInfo) {
+      stageInfo = stageMetadataList.find(s => normalize(s.StageName).startsWith(folderNameNormalized));
+      if (stageInfo) console.log(`✅ StartsWith match: "${stageInfo.StageName}"`);
+    }
+
+    // --- Fuzzy match
+    if (!stageInfo) {
+      const scored = stageMetadataList.map(s => ({
+        stage: s,
+        distance: levenshtein.get(normalize(s.StageName), folderNameNormalized)
+      }));
+
+      scored.sort((a, b) => a.distance - b.distance);
+
+      if (scored.length && scored[0].distance <= 3) {
+        if (scored.length === 1 || scored[0].distance + 2 < scored[1].distance) {
+          stageInfo = scored[0].stage;
+          console.log(`✅ Fuzzy match: "${stageInfo.StageName}" (distance ${scored[0].distance})`);
+        } else {
+          console.warn(`⚠️ Ambiguous fuzzy match for "${folder.name}":`, scored.slice(0, 3));
+        }
+      }
+    }
+
+    if (!stageInfo) {
+      console.warn(`⛔ No match for "${folder.name}" (${folderNameNormalized}), skipping.`);
+      continue;
+    }
+
+    // Load .ini files inside this folder
+    const iniFiles = fs.readdirSync(folderPath).filter(file => file.endsWith('.ini'));
+
+    for (const iniFile of iniFiles) {
+      const filePath = path.join(folderPath, iniFile);
       const relativePath = path.relative(pacenotePath, filePath);
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const parsedContent = ini.parse(fileContent);
       const stats = fs.statSync(filePath);
       const lastModified = stats.mtime.toISOString();
 
-      const folderBase = path.basename(path.dirname(filePath));
-      const guessedStageName = folderBase.replace(/_/g, ' ').trim().toLowerCase();
-
-
-      let stageInfo = null;
-      for (const key in stageMetadataMap) {
-        if (key.toLowerCase() === guessedStageName) {
-          stageInfo = stageMetadataMap[key];
-          break;
-        }
-      }
-
-
-
-      if (!stageInfo) {
-        console.warn(`⚠️ No metadata found for guessed name "${guessedStageName}", skipping ${file}`);
-        continue;
-      }
-      
-
       const jsonContent = {
         type: 'file-content',
-        path: relativePath,
+        path: filePath,
         data: parsedContent,
         date: lastModified,
         stageInfo: {
           ...stageInfo,
-          FolderPath: path.dirname(filePath)
+          FolderPath: `/${folder.name}`
         }
       };
 
-      sendToClient(deviceId, jsonContent);
+      await sendToClient(deviceId, jsonContent);
     }
   }
 
-  console.log(`Resent all available files to device ${deviceId}`);
+  console.log(`✅ Resent all available files to device ${deviceId}`);
 }
 
 
-function sendToClient(deviceId, jsonContent) {
+async function sendToClient(deviceId, jsonContent) {
   const client = clients[deviceId];
   if (client && client.readyState === WebSocket.OPEN) {
     client.send(JSON.stringify(jsonContent));
-    
+   // console.log(JSON.stringify(jsonContent, null, 2));
     console.log(`📦 Sent to device ${deviceId}`);
     console.log('Stage Info:', JSON.stringify(jsonContent.stageInfo, null, 2));
   }
@@ -812,14 +862,14 @@ function sendMissingFiles(deviceId) {
     const lastModified = stats.mtime.toISOString(); 
 
 
-    if (!clientFiles[deviceId].has(filePath)) {
-      sendToClient(deviceId, {
-        path: relativePath,
-        data: ini.parse(fs.readFileSync(filePath, 'utf-8')),
-        date: lastModified
-      });
-      clientFiles[deviceId].add(filePath);
-    }
+//     if (!clientFiles[deviceId].has(filePath)) {
+//       sendToClient(deviceId, {
+//         path: relativePath,
+//         data: ini.parse(fs.readFileSync(filePath, 'utf-8')),
+//         date: lastModified
+//       });
+//       clientFiles[deviceId].add(filePath);
+//     }
   });
 }
 

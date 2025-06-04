@@ -10,25 +10,44 @@ async function scrapeStages() {
 
     const tables = $('table');
     const stageTable = tables.eq(25); // Table #26 (0-based index)
-
     const rows = stageTable.find('tr').slice(1); // skip header
+
     const data = [];
 
     rows.each((_, row) => {
       const cols = $(row).find('td');
-      if (cols.length >= 6) {
-        const stageId = $(cols[0]).text().trim();
-        const name = $(cols[1]).text().trim();
-        const length = $(cols[2]).text().trim().replace(' km', '');
-        const surface = $(cols[4]).text().trim();
-        const author = $(cols[5]).text().trim();
-        const folder = cols.length > 6 ? $(cols[6]).text().trim() : '';
+      const div = $(cols[1]).find('div');
+      const onMouseOverAttr = div.attr('onmouseover');
+
+      if (onMouseOverAttr) {
+        // Extract inner HTML string from Tip(...)
+        const tipContentMatch = onMouseOverAttr.match(/Tip\('(.*?)'\)/);
+        if (!tipContentMatch || tipContentMatch.length < 2) return;
+
+        const tooltipHTML = tipContentMatch[1]
+          .replace(/\\"/g, '"')   // unescape quotes
+          .replace(/\\'/g, "'")   // unescape single quotes
+          .replace(/&lt;/g, '<')  // decode HTML
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"');
+
+        const $tooltip = cheerio.load(tooltipHTML);
+        const name = $tooltip('h2').text().trim();
+        const idText = $tooltip('td:contains("ID:")').text().trim();
+        const stageId = parseInt(idText.replace('ID:', '').trim());
+
+        const countryText = $tooltip('td:contains("Country:")').next().text().trim();
+        const surface = $tooltip('td:contains("Surface:")').next().text().trim();
+        const lengthText = $tooltip('td:contains("Length:")').next().text().trim();
+        const length = parseFloat(lengthText.replace(' km', '').trim());
+        const author = $tooltip('td:contains("Author:")').next().text().trim();
 
         data.push({
-          StageId: parseInt(stageId),
+          StageId: stageId,
           StageName: name,
-          Length: length,
+          Country: countryText,
           Surface: surface,
+          Length: length,
           Author: author
         });
       }
