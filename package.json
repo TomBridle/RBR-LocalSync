@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "package-win": "electron-packager . Pacenote Sync --platform=win32 --arch=x64 --out=release-builds --icon=assets/icon.ico",
-    "dist": "electron-builder --win",
+    "dist": "cross-env GYP_DEFINES=openssl_fips=0 electron-builder --win",
     "build": "electron-builder"
   },
   "build": {
@@ -20,7 +20,8 @@
       "index.js",
       "node_modules/**/*",
       "package.json",
-      "parseCodriver.js"
+      "parseCodriver.js",
+      "scrape-stages.js"
     ],
     "extraResources": [
       "assets/icon.ico"
@@ -52,6 +53,7 @@
     "ws": "^7.4.6"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "electron": "^13.6.9",
     "electron-builder": "^25.1.8"
   }

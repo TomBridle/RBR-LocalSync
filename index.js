@@ -463,7 +463,14 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'replace', status: 'success' }));
     
       // Handle messages that include a deviceId.
-      } else if (data.command === 'getCodrivers') {
+      } 
+       else if (data.type === 'pacenoteLabels' && typeof data.data === 'string') {
+  console.log('Received pacenoteLabels. Saving to .sym file…');
+  savePacenoteLabelsToSym(data.data);
+  ws.send(JSON.stringify({ type: 'pacenoteLabels', status: 'success' }));
+}
+
+      else if (data.command === 'getCodrivers') {
         const codriverDir = path.join(folderPath, 'Plugins', 'Pacenote', 'config', 'pacenotes', 'packages');
         console.log('getCoDrivers called');
 
@@ -750,7 +757,28 @@ async function loadAllStageMetadata() {
 }
   
 
+/**
+ * Save pacenote labels string to a .sym file
+ * @param {string} labelsString - lines like "DefaultName = UserLabel"
+ */
+function savePacenoteLabelsToSym(labelsString) {
+  const symDir = path.join(
+    folderPath,
+    'Plugins',
+    'NGPCarMenu',
+    'MyPacenotes',
+    'CustomLabels'
+  );
+  fs.mkdirSync(symDir, { recursive: true });
 
+  // Normalize line endings and ensure trailing newline
+  const content =
+    labelsString.trim().split(/\r?\n/).join('\r\n') + '\r\n';
+
+  const symPath = path.join(symDir, 'pacenoteLabels.sym');
+  fs.writeFileSync(symPath, content, 'utf8');
+  console.log(`Pacenote labels saved to: ${symPath}`);
+}
 
 
 function normalize(str) {
