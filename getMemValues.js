@@ -13,11 +13,10 @@ const SAMPLE_INTERVAL  = 100; // ms
 
 // Absolute VAs from RBRAPI.h (preferred base DEFAULT_BASE)
 const ABS_OFF = {
-  // Version pointers
+  // Version
   ptrRBRVersion:        0x0165FC38,
   ptrRBRVersionMinor:   0x0165FC3C,
   ptrRBRVersionPatch:   0x0165FC40,
-  // Core bases
   rbrBase:              0x00400000,
   stageNamePtr:         0x007D1D64,
   mapInfoBase:          0x01659184,
@@ -25,14 +24,16 @@ const ABS_OFF = {
   mapSettingsEx:        0x008938F8,
   carControlsPtr:       0x0165FD68,
   carInfoPtr:           0x0165FC68,
-  gameModeBase:         0x007EAC48
+  gameModeBase:         0x007EAC48,
+  carMovementBase:      0x008EF660 // RBRCarMovement struct base
 };
 // Field-specific offsets
 const MI_OFF = { curLap:0x00, totalLaps:0x04, stageLength:0x75310 };
 const MS_OFF = { trackID:0x04, tyreType:0x38, weatherType:0x48, damageType:0x50, pacecarEnabled:0x54 };
 const MSE_OFF= { timeOfDay:0x38, skyType:0x3C, surfaceWetness:0x14, surfaceAge:0x18 };
 const CI_OFF = {
-  hudX:0x00, hudY:0x04, raceStarted:0x08, speed:0x0C, rpm:0x10,
+  hudX:0x00, hudY:0x04, raceStarted:0x08,
+  speed:0x0C, rpm:0x10,
   waterTemp:0x14, oilTemp:0x18, turboPressure:0x1C,
   brakeTempFL:0x20, brakeTempFR:0x24, brakeTempRL:0x28, brakeTempRR:0x2C,
   tyreTempFL:0x30, tyreTempFR:0x34, tyreTempRL:0x38, tyreTempRR:0x3C,
@@ -40,7 +41,16 @@ const CI_OFF = {
   stageProgress:0x4C, raceTime:0x50, bestLapTime:0x54, curLapTime:0x58,
   split1Time:0x5C, split2Time:0x60, raceFinished:0x64,
   drivingDir:0x68, fadeWrongWay:0x6C, gear:0x70,
-  stageDelay:0x74, falseStart:0x78, splitNo:0x7C, finishPassed:0x80
+  stageDelay:0x74, falseStart:0x78, splitNo:0x7C, finishPassed:0x80,
+  // Damage offsets (replace with discovered values)
+  damageFL: 0x00,
+  damageFR: 0x00,
+  damageRL: 0x00,
+  damageRR: 0x00,
+  // Car world coordinates
+  carPosX: 0xEF8,
+  carPosY: 0xEFC,
+  carPosZ: 0xF00
 };
 const CC_OFF = { steering:0x5C, throttle:0x60, brake:0x64, handBrake:0x68, clutch:0x6C, gearUp:0x70, gearDown:0x74 };
 const GAME_MODE_OFF = 0x0;  // Offset zero since gameModeBase now points directly to the field = 0x728;  // within RBRGameMode
@@ -84,23 +94,30 @@ function readMapInfo(h,a) {
   for (let k in MSE_OFF) m[k] = safeRead(h,a.mapSettingsEx+MSE_OFF[k],memoryjs.INT);
   return m;
 }
-function readCarInfo(h,a) {
+function readCarInfo(h, a) {
   const c = {};
-  let p = safeRead(h,a.carInfoPtr,memoryjs.PTR);
-  p = typeof p==='bigint'?Number(p):p;
+  let p = safeRead(h, a.carInfoPtr, memoryjs.PTR);
+  p = typeof p === 'bigint' ? Number(p) : p;
   if (!p) return c;
   for (let k in CI_OFF) {
-    const type = (k==='gear')?memoryjs.INT:memoryjs.FLOAT;
-    c[k] = safeRead(h,p+CI_OFF[k],type);
+    const type = (k === 'gear') ? memoryjs.INT : memoryjs.FLOAT;
+    let val = safeRead(h, p + CI_OFF[k], type);
+    // Invert Y coordinate
+    if (k === 'carPosY') {
+      val = -val;
+    }
+    c[k] = val;
   }
   return c;
 }
-function readCarControls(h,a) {
+function readCarControls(h, a) {
   const ctl = {};
-  let p = safeRead(h,a.carControlsPtr,memoryjs.PTR);
-  p = typeof p==='bigint'?Number(p):p;
+  let p = safeRead(h, a.carControlsPtr, memoryjs.PTR);
+  p = typeof p === 'bigint' ? Number(p) : p;
   if (!p) return ctl;
-  for (let k in CC_OFF) ctl[k] = safeRead(h,p+CC_OFF[k],memoryjs.FLOAT);
+  for (let k in CC_OFF) {
+    ctl[k] = safeRead(h, p + CC_OFF[k], memoryjs.FLOAT);
+  }
   return ctl;
 }
 function readGameMode(handle){
@@ -134,17 +151,31 @@ function scanCarInfo(h,a,len=512) {
 
   if(process.argv.includes('--scan-carinfo')){ scanCarInfo(proc.handle,addrs); return; }
 
-  setInterval(()=>{
+// Initialize previous damage values for detection
+let prevDamage = { damageFL: 0, damageFR: 0, damageRL: 0, damageRR: 0 };
+
+  setInterval(() => {
     console.clear();
-    console.log('GameMode:',readGameMode(proc.handle,addrs));
+    console.log('GameMode:', readGameMode(proc.handle, addrs));
     console.log('=== Stage/Map ===');
-    const map = readMapInfo(proc.handle,addrs);
-    for(let k in map) console.log(k+':',format(k,map[k]));
+    const map = readMapInfo(proc.handle, addrs);
+    for (let k in map) console.log(k + ':', format(k, map[k]));
+
     console.log('=== CarInfo ===');
-    const car = readCarInfo(proc.handle,addrs);
-    for(let k in car) console.log(k+':',format(k,car[k]));
+    const car = readCarInfo(proc.handle, addrs);
+    for (let k in car) console.log(k + ':', format(k, car[k]));
+
+    // Damage detection
+    console.log('=== Damage Detection ===');
+    ['damageFL','damageFR','damageRL','damageRR'].forEach(key => {
+      const curr = car[key] || 0;
+      const prev = prevDamage[key] || 0;
+      if (curr > prev) console.log(`${key} increased: ${prev} -> ${curr}`);
+      prevDamage[key] = curr;
+    });
+
     console.log('=== Controls ===');
-    const ctl = readCarControls(proc.handle,addrs);
-    for(let k in ctl) console.log(k+':',ctl[k]);
-  },SAMPLE_INTERVAL);
+    const ctl = readCarControls(proc.handle, addrs);
+    for (let k in ctl) console.log(k + ':', ctl[k]);
+  }, SAMPLE_INTERVAL);
 })();
