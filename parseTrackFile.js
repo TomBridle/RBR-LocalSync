@@ -1,39 +1,76 @@
-const fs = require('fs');
+const fs = require("fs");
+const path = require("path");
 
-// Adjust these to match the known min/max of the map if needed
-const MIN_X = -1000, MAX_X = 1000;
-const MIN_Y = -1000, MAX_Y = 1000;
+// Adjust these depending on how many bytes to read per block and what offset to start from
+const BLOCK_SIZE = 32; // spacing between entries
+const FLOAT_SIZE = 4;  // each float is 4 bytes
 
-const filePath = 'track-500_M.trk'; // <- update this path
-
-function readFloat(buffer, offset) {
-  return buffer.readFloatLE(offset); // assuming little-endian
+const filePath = process.argv[2];
+if (!filePath || !fs.existsSync(filePath)) {
+  console.error("Usage: node parseTrkFile.js <path-to-.trk>");
+  process.exit(1);
 }
 
-function isWithinBounds(x, y) {
-  return x > MIN_X && x < MAX_X && y > MIN_Y && y < MAX_Y;
+const buffer = fs.readFileSync(filePath);
+const result = [];
+
+for (let offset = 20; offset + 16 <= buffer.length; offset += BLOCK_SIZE) {
+  const stage_x = buffer.readFloatLE(offset);
+  const track_x = buffer.readFloatLE(offset + 4);
+  const stage_y = buffer.readFloatLE(offset + 8);
+  const track_y = buffer.readFloatLE(offset + 12);
+
+  result.push({ offset, stage_x, stage_y, track_x, track_y });
 }
 
-function parseTrkFileToJson(buffer) {
-  const results = [];
+// Write to JSON
+const outputPath = path.join(path.dirname(filePath), path.basename(filePath, ".trk") + "_parsed.json");
+fs.writeFileSync(outputPath, JSON.stringify(result, null, 2));
+console.log(`Parsed ${result.length} coordinate triples to ${outputPath}`);
 
-  for (let i = 0; i < buffer.length - 12; i += 4) {
-    const x = readFloat(buffer, i);
-    const y = readFloat(buffer, i + 4);
-    const z = readFloat(buffer, i + 8);
+// Chart generation using chartjs-node-canvas
+const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
 
-    if (isFinite(x) && isFinite(y) && isFinite(z) && isWithinBounds(x, y)) {
-      results.push({ x, y, z, offset: i });
+(async () => {
+  const width = 1200;
+  const height = 1000;
+  const chartJSNodeCanvas = new ChartJSNodeCanvas({ width, height });
+
+  // Filter out entries with undefined or non-numeric stage_x or stage_y
+const filtered = result.filter(p =>
+  typeof p.stage_x === 'number' &&
+  typeof p.stage_y === 'number' &&
+  !isNaN(p.stage_x) &&
+  !isNaN(p.stage_y) &&
+  Math.abs(p.stage_x) < 1e6 &&
+  Math.abs(p.stage_y) < 1e6
+);
+  const stageX = filtered.map(p => p.stage_x);
+  const stageY = filtered.map(p => p.stage_y);
+
+  const configuration = {
+    type: 'line',
+    data: {
+      labels: stageX,
+      datasets: [{
+        label: 'Stage Track',
+        data: stageX.map((x, i) => ({ x, y: stageY[i] })),
+        borderColor: 'blue',
+        fill: false,
+        tension: 0.1,
+        pointRadius: 0,
+      }]
+    },
+    options: {
+      scales: {
+        x: { type: 'linear', position: 'bottom' },
+        y: { type: 'linear' }
+      }
     }
-  }
+  };
 
-  return results;
-}
-
-fs.readFile(filePath, (err, buffer) => {
-  if (err) throw err;
-
-  const parsedData = parseTrkFileToJson(buffer);
-  fs.writeFileSync('parsed_track.json', JSON.stringify(parsedData, null, 2));
-  console.log(`Parsed ${parsedData.length} points to parsed_track.json`);
-});
+  const imageBuffer = await chartJSNodeCanvas.renderToBuffer(configuration);
+  const imagePath = path.join(path.dirname(filePath), path.basename(filePath, ".trk") + "_plot.png");
+  fs.writeFileSync(imagePath, imageBuffer);
+  console.log(`Chart saved to ${imagePath}`);
+})();
