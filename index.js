@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const os = require('os');
 const chokidar = require('chokidar');
 const WebSocket = require('ws');
@@ -794,6 +794,28 @@ function savePacenoteLabelsToSym(labelsString) {
   const symPath = path.join(symDir, 'pacenoteLabels.sym');
   fs.writeFileSync(symPath, content, 'utf8');
   console.log(`Pacenote labels saved to: ${symPath}`);
+
+  // Notify the user where the labels were saved
+  dialog.showMessageBox(mainWindow || null, {
+    type: 'info',
+    title: 'Pacenote Labels Saved',
+    message: 'Pacenote labels have been saved successfully.',
+    detail: symPath,
+    buttons: ['OK', 'Show Folder'],
+    defaultId: 0,
+    cancelId: 0
+  }).then((result) => {
+    if (result.response === 1) {
+      // Open the folder and highlight the file
+      try {
+        shell.showItemInFolder(symPath);
+      } catch (e) {
+        console.error('Failed to open folder:', e);
+      }
+    }
+  }).catch((err) => {
+    console.error('Message box failed:', err);
+  });
 }
 
 
