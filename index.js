@@ -7,6 +7,12 @@ const ini = require('ini');
 const bonjour = require('bonjour')();
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+const codriverParser = require('./parseCodriver');
+const axios = require('axios');
+const cheerio = require('cheerio');
+const { decode } = require('html-entities');
+const levenshtein = require('fast-levenshtein');
+
 
 let mainWindow;
 const clients = {}; // Store WebSocket clients by device ID
@@ -405,7 +411,7 @@ function broadcastFileToClients(filePath, rootPath) {
     Object.keys(clients).forEach(deviceId => {
       if (!clientFiles[deviceId]) clientFiles[deviceId] = new Set();
       if (!clientFiles[deviceId].has(filePath)) {
-        sendToClient(deviceId, jsonContent);
+        //sendToClient(deviceId, jsonContent);
         clientFiles[deviceId].add(filePath);
       }
     });
@@ -421,11 +427,11 @@ function broadcastFileToClients(filePath, rootPath) {
 wss.on('connection', (ws) => {
   console.log('Client connected');
   
-  ws.on('message', (message) => {
+  ws.on('message', async (message) => {
     try {
       const data = JSON.parse(message);
-      console.log('Received message:', data);
-      console.log('Parsed message:', data);
+      //console.log('Received message:', data);
+      //console.log('Parsed message:', data);
 
       // **Added handling for 'show-drag-area' command**
       if (data.command === 'show-drag-area') {
@@ -438,24 +444,77 @@ wss.on('connection', (ws) => {
           console.log('Sending stage times:', stageTimes);
           ws.send(JSON.stringify({ type: 'stageTimes', data: stageTimes }));
         });
-      } else if (data.deviceId) {
+      } else if (data.type === 'save' && data.pacenotes && data.stageInfo) {
+        console.log('Received save message. Attempting to save new INI file.');
+        
+        // Build the target directory path using your existing folder structure.
+        savePacenotesToIni(data)
+        
+        // Send a success response back to the client.
+        ws.send(JSON.stringify({ type: 'save', status: 'success' }));
+    
+      // Handle messages that include a deviceId.
+      } else if (data.type === 'replace' && data.pacenotes && data.stageInfo) {
+        console.log('Received replace message. Attempting to replace INI file.');
+        
+        // Build the target directory path using your existing folder structure.
+        replacePacenotesToIni(data)
+        
+        // Send a success response back to the client.
+        ws.send(JSON.stringify({ type: 'replace', status: 'success' }));
+    
+      // Handle messages that include a deviceId.
+      } 
+       else if (data.type === 'pacenoteLabels' && typeof data.data === 'string') {
+  console.log('Received pacenoteLabels. Saving to .sym file…');
+  savePacenoteLabelsToSym(data.data);
+  ws.send(JSON.stringify({ type: 'pacenoteLabels', status: 'success' }));
+}
+
+      else if (data.command === 'getCodrivers') {
+        const codriverDir = path.join(folderPath, 'Plugins', 'Pacenote', 'config', 'pacenotes', 'packages');
+        console.log('getCoDrivers called');
+
+        try {
+
+          console.log('Resolved codriverDir:', codriverDir);
+          console.log('Exists?', fs.existsSync(codriverDir));
+
+          const pacenotes = codriverParser.processAllIniFiles(codriverDir);
+          const organized = codriverParser.organizePacenotes(pacenotes);
+          ws.send(JSON.stringify({
+            type: 'codrivers',
+            data: organized
+          }));
+          console.log('Sent codriver pacenotes to client');
+         // console.log(JSON.stringify(organized, null, 2));
+        } catch (err) {
+          console.error('Failed to parse codriver data:', err.message);
+          ws.send(JSON.stringify({ type: 'codrivers', error: err.message }));
+       
+        }
+      }
+       else if (data.deviceId) {
         const deviceId = data.deviceId;
         clients[deviceId] = ws;
-        console.log(`Device ID received: ${deviceId}`);
+        console.log('Device ID received: ${deviceId}');
 
         if (!clientFiles[deviceId]) {
           clientFiles[deviceId] = new Set();
         }
-        sendAllFilesToClient(deviceId)
-        sendMissingFiles(deviceId);
+        await sendAllFilesToClient(deviceId)
+        await sendMissingFiles(deviceId);
         updateStatus();
-      } else {
+      } 
+      else {
         console.log('Received message without deviceId:', message);
       }
     } catch (e) {
       console.error('Error parsing message:', e);
     }
   });
+
+ 
 
   ws.on('close', () => {
     console.log('Client disconnected');
@@ -475,6 +534,91 @@ wss.on('connection', (ws) => {
     }
   });
 });
+
+function savePacenotesToIni(data) {
+  if (!data.stageInfo || !data.pacenotes || data.pacenotes.length === 0) {
+      console.error("Invalid data received for saving.");
+      return;
+  }
+
+  // Extract necessary information
+  const stageInfo = data.stageInfo;
+  const pacenotes = data.pacenotes;
+
+  // Define file name and target folder
+  const stageName = stageInfo.StageName.replace(/\s+/g, '_'); // Replace spaces with underscores
+  const versionId = pacenotes[0].VersionID; // Assuming all pacenotes have the same VersionID
+  const fileName = `${stageName}.ini`;
+
+  // Get the full path to save the file
+  const targetFolder = path.join(folderPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes', stageInfo.FolderPath);
+  const filePath = path.join(targetFolder, fileName);
+
+  // Ensure target folder exists
+  if (!fs.existsSync(targetFolder)) {
+      fs.mkdirSync(targetFolder, { recursive: true });
+  }
+
+  // Construct the .ini file content
+  let iniContent = `; MyPacenote generated by ${stageInfo.author}\n\n`;
+  iniContent += `[PACENOTES]\n`;
+  iniContent += `count = ${pacenotes.length}\n\n`;
+
+  // Add each pacenote entry in the correct format
+  pacenotes.forEach((note, index) => {
+      iniContent += `[P${index}]\n`;
+      iniContent += `type = ${note.Type}\n`;
+      iniContent += `distance = ${note.Distance}\n`;
+      iniContent += `flag = ${note.Flag}\n\n`;
+  });
+
+  // Write the .ini file
+  fs.writeFileSync(filePath, iniContent, 'utf-8');
+  console.log(`Saved pacenotes to: ${filePath}`);
+}
+
+function replacePacenotesToIni(data) {
+  if (!data.stageInfo || !data.pacenotes || data.pacenotes.length === 0) {
+      console.error("Invalid data received for saving.");
+      return;
+  }
+
+  // Extract necessary information
+  const stageInfo = data.stageInfo;
+  const pacenotes = data.pacenotes;
+
+  // Define file name and target folder
+  const stageName = stageInfo.StageName.replace(/\s+/g, '_'); // Replace spaces with underscores
+  const versionId = pacenotes[0].VersionID; // Assuming all pacenotes have the same VersionID
+  const fileName = `${stageName}.ini`;
+
+  // Get the full path to save the file
+  const targetFolder = path.join(folderPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes', stageInfo.FolderPath);
+  const filePath = path.join(targetFolder, fileName);
+
+  // Ensure target folder exists
+  if (!fs.existsSync(targetFolder)) {
+      fs.mkdirSync(targetFolder, { recursive: true });
+  }
+
+  // Construct the .ini file content
+  let iniContent = `; MyPacenote generated by ${stageInfo.author}\n\n`;
+  iniContent += `[PACENOTES]\n`;
+  iniContent += `count = ${pacenotes.length}\n\n`;
+
+  // Add each pacenote entry in the correct format
+  pacenotes.forEach((note, index) => {
+      iniContent += `[P${index}]\n`;
+      iniContent += `type = ${note.Type}\n`;
+      iniContent += `distance = ${note.Distance}\n`;
+      iniContent += `flag = ${note.Flag}\n\n`;
+  });
+
+  // Write the .ini file
+  fs.writeFileSync(filePath, iniContent, 'utf-8');
+  console.log(`Saved pacenotes to: ${filePath}`);
+}
+
 
 function getStageTimesAfterDate(stageId, slotId, folderPath, callback) {
 
@@ -550,50 +694,205 @@ LIMIT 1;
 
 
 // Function to send all available .ini files to a specific client
-function sendAllFilesToClient(deviceId) {
+// Load all stage metadata from RallySimFans
+async function loadAllStageMetadata() {
+  const url = 'https://www.rallysimfans.hu/rbr/stages.php?lista=3&rendez=stage_id';
+  const data = [];
+  console.log('Loading stage metadata from RallySimFans...');
+
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+        'Accept-Language': 'en-GB,en;q=0.9',
+        'Referer': 'https://www.rallysimfans.hu/'
+      },
+      timeout: 20000
+    });
+
+    const $ = cheerio.load(response.data);
+
+    // Grab all elements that carry a Tip('...') tooltip (these contain the stage HTML)
+    const tooltipCarriers = $('div[onmouseover^="Tip(\'"], a[onmouseover^="Tip(\'"]');
+
+    tooltipCarriers.each((_, el) => {
+      const onmo = $(el).attr('onmouseover') || '';
+      const m = onmo.match(/Tip\(\s*'([\s\S]*?)'\s*\)/);
+      if (!m) return;
+
+      // Unescape JS string and decode HTML entities
+      let raw = m[1].replace(/\\"/g, '"').replace(/\\'/g, "'");
+      const tooltipHTML = decode(raw);
+
+      const $tip = cheerio.load(tooltipHTML);
+
+      const getNext = (label) => {
+        const tds = $tip('td').toArray();
+        const lab = tds.find(td => $tip(td).text().trim().startsWith(label));
+        if (!lab) return '';
+        const next = $tip(lab).next('td');
+        return next.length ? next.text().trim() : '';
+      };
+
+      const name = $tip('h2').first().text().trim();
+
+      // ID may be in next cell or inline like "ID: 123"
+      let idText = getNext('ID:');
+      if (!idText) {
+        const inline = $tip('td').toArray().map(td => $tip(td).text()).join(' ');
+        const mm = inline.match(/ID:\s*(\d+)/);
+        idText = mm ? mm[1] : '';
+      }
+
+      const lengthText = getNext('Length:');
+      const surface = getNext('Surface:');
+      const author = getNext('Author:');
+      const country = getNext('Country:');
+
+      // Lengths may be like "5,23 km" or "5.23 km"
+      const lengthKm = parseFloat((lengthText || '').replace(',', '.').replace(/[^0-9.]/g, ''));
+
+      if (name && idText) {
+        data.push({
+          StageId: parseInt(idText, 10),
+          StageName: name,
+          Length: Number.isFinite(lengthKm) ? Math.round(lengthKm * 1000) : null, // store as metres like before
+          Surface: surface || '',
+          Author: author || '',
+          Country: country || ''
+        });
+      }
+    });
+
+    console.log(`✅ Found ${data.length} stages`);
+  } catch (err) {
+    console.error('❌ Failed to scrape stage data:', err.message);
+  }
+
+  return data;
+}
+  
+
+/**
+ * Save pacenote labels string to a .sym file
+ * @param {string} labelsString - lines like "DefaultName = UserLabel"
+ */
+function savePacenoteLabelsToSym(labelsString) {
+  const symDir = path.join(
+    folderPath,
+    'Plugins',
+    'NGPCarMenu',
+    'MyPacenotes',
+    'CustomLabels'
+  );
+  fs.mkdirSync(symDir, { recursive: true });
+
+  // Normalize line endings and ensure trailing newline
+  const content =
+    labelsString.trim().split(/\r?\n/).join('\r\n') + '\r\n';
+
+  const symPath = path.join(symDir, 'pacenoteLabels.sym');
+  fs.writeFileSync(symPath, content, 'utf8');
+  console.log(`Pacenote labels saved to: ${symPath}`);
+}
+
+
+function normalize(str) {
+  return str.toLowerCase()
+    .normalize("NFD").replace(/\p{Diacritic}/gu, '')  // remove accents
+    .replace(/[^a-z0-9]/g, '');                      // remove symbols/spaces
+}
+
+async function sendAllFilesToClient(deviceId) {
   const client = clients[deviceId];
   if (!client) return;
 
-  // Clear the client's sent files set to resend all files
+  console.log(`📤 Sending all files to device ${deviceId}...`);
   clientFiles[deviceId] = new Set();
 
   const pacenotePath = path.join(folderPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes');
-  const files = fs.readdirSync(pacenotePath);
+  const stageMetadataList = await loadAllStageMetadata();
 
-  files.forEach((file) => {
-    const filePath = path.join(pacenotePath, file);
-    if (file.endsWith('.ini') && fs.existsSync(filePath)) {
+  const folders = fs.readdirSync(pacenotePath, { withFileTypes: true }).filter(dirent => dirent.isDirectory());
+
+  for (const folder of folders) {
+    const folderPath = path.join(pacenotePath, folder.name);
+    const folderNameNormalized = normalize(folder.name.trim());
+    console.log(`🔍 Matching for folder: "${folder.name}" → "${folderNameNormalized}"`);
+
+    let stageInfo = null;
+
+    // --- Exact match
+    stageInfo = stageMetadataList.find(s => normalize(s.StageName) === folderNameNormalized);
+    if (stageInfo) console.log(`✅ Exact match: "${stageInfo.StageName}"`);
+
+    // --- StartsWith match
+    if (!stageInfo) {
+      stageInfo = stageMetadataList.find(s => normalize(s.StageName).startsWith(folderNameNormalized));
+      if (stageInfo) console.log(`✅ StartsWith match: "${stageInfo.StageName}"`);
+    }
+
+    // --- Fuzzy match
+    if (!stageInfo) {
+      const scored = stageMetadataList.map(s => ({
+        stage: s,
+        distance: levenshtein.get(normalize(s.StageName), folderNameNormalized)
+      }));
+
+      scored.sort((a, b) => a.distance - b.distance);
+
+      if (scored.length && scored[0].distance <= 3) {
+        if (scored.length === 1 || scored[0].distance + 2 < scored[1].distance) {
+          stageInfo = scored[0].stage;
+          console.log(`✅ Fuzzy match: "${stageInfo.StageName}" (distance ${scored[0].distance})`);
+        } else {
+          console.warn(`⚠️ Ambiguous fuzzy match for "${folder.name}":`, scored.slice(0, 3));
+        }
+      }
+    }
+
+    if (!stageInfo) {
+      console.warn(`⛔ No match for "${folder.name}" (${folderNameNormalized}), skipping.`);
+      continue;
+    }
+
+    // Load .ini files inside this folder
+    const iniFiles = fs.readdirSync(folderPath).filter(file => file.endsWith('.ini'));
+
+    for (const iniFile of iniFiles) {
+      const filePath = path.join(folderPath, iniFile);
       const relativePath = path.relative(pacenotePath, filePath);
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const parsedContent = ini.parse(fileContent);
-
-
       const stats = fs.statSync(filePath);
-      const lastModified = stats.mtime.toISOString(); 
-
-
-      //console.log(`Modified: ${lastModified} for file ${relativePath}`);
-
+      const lastModified = stats.mtime.toISOString();
 
       const jsonContent = {
-        path: relativePath,
+        type: 'file-content',
+        path: filePath,
         data: parsedContent,
-        date: lastModified
+        date: lastModified,
+        stageInfo: {
+          ...stageInfo,
+          FolderPath: `/${folder.name}`
+        }
       };
-      console.log(jsoncontent.date);
-      sendToClient(deviceId, jsonContent); // Send each .ini file to the client
-    }
-  });
 
-  console.log(`Resent all available files to device ${deviceId}`);
+      await sendToClient(deviceId, jsonContent);
+    }
+  }
+
+  console.log(`✅ Resent all available files to device ${deviceId}`);
 }
 
-function sendToClient(deviceId, jsonContent) {
+
+async function sendToClient(deviceId, jsonContent) {
   const client = clients[deviceId];
   if (client && client.readyState === WebSocket.OPEN) {
     client.send(JSON.stringify(jsonContent));
-    console.log(`Sending file with modified date: ${jsonContent.date}`);
-    //console.log(`Sent file to device ${deviceId}:`, jsonContent);
+   // console.log(JSON.stringify(jsonContent, null, 2));
+    console.log(`📦 Sent to device ${deviceId}`);
+    console.log('Stage Info:', JSON.stringify(jsonContent.stageInfo, null, 2));
   }
 }
 
@@ -607,14 +906,14 @@ function sendMissingFiles(deviceId) {
     const lastModified = stats.mtime.toISOString(); 
 
 
-    if (!clientFiles[deviceId].has(filePath)) {
-      sendToClient(deviceId, {
-        path: relativePath,
-        data: ini.parse(fs.readFileSync(filePath, 'utf-8')),
-        date: lastModified
-      });
-      clientFiles[deviceId].add(filePath);
-    }
+//     if (!clientFiles[deviceId].has(filePath)) {
+//       sendToClient(deviceId, {
+//         path: relativePath,
+//         data: ini.parse(fs.readFileSync(filePath, 'utf-8')),
+//         date: lastModified
+//       });
+//       clientFiles[deviceId].add(filePath);
+//     }
   });
 }
 

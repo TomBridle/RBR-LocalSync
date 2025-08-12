@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "package-win": "electron-packager . Pacenote Sync --platform=win32 --arch=x64 --out=release-builds --icon=assets/icon.ico",
-    "dist": "electron-builder --win",
+    "dist": "cross-env GYP_DEFINES=openssl_fips=0 electron-builder --win",
     "build": "electron-builder"
   },
   "build": {
@@ -19,7 +19,9 @@
     "files": [
       "index.js",
       "node_modules/**/*",
-      "package.json"
+      "package.json",
+      "parseCodriver.js",
+      "scrape-stages.js"
     ],
     "extraResources": [
       "assets/icon.ico"
@@ -38,16 +40,26 @@
     }
   },
   "dependencies": {
+    "asciichart": "^1.5.25",
+    "axios": "^1.9.0",
     "bonjour": "^3.5.0",
+    "canvas": "^3.1.2",
+    "chartjs-node-canvas": "^5.0.0",
+    "cheerio": "^1.0.0-rc.10",
     "chokidar": "^3.5.2",
+    "fast-levenshtein": "^3.0.0",
     "fs-extra": "^11.2.0",
+    "html-entities": "^2.6.0",
     "ini": "^2.0.0",
+    "mat-for-js": "github:KovacsGG/mat4js",
     "memoryjs": "^3.5.1",
+    "puppeteer": "^24.16.1",
     "ref-napi": "^3.0.3",
     "sqlite3": "^5.1.7",
     "ws": "^7.4.6"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "electron": "^13.6.9",
     "electron-builder": "^25.1.8"
   }
