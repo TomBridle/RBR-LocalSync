@@ -22,8 +22,7 @@
       "package.json",
       "parseCodriver.js",
       "scrape-stages.js",
-      "readMemValues.js",
-      "readCarId.js"
+      "readMemValues.js"
     ],
     "extraResources": [
       "assets/icon.ico"
@@ -54,7 +53,6 @@
     "html-entities": "^2.6.0",
     "ini": "^2.0.0",
     "mat-for-js": "github:KovacsGG/mat4js",
-    "memoryjs": "^3.5.1",
     "puppeteer": "^24.16.1",
     "ref-napi": "^3.0.3",
     "sqlite3": "^5.1.7",
