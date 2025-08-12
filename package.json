@@ -21,7 +21,9 @@
       "node_modules/**/*",
       "package.json",
       "parseCodriver.js",
-      "scrape-stages.js"
+      "scrape-stages.js",
+      "readMemValues.js",
+      "readCarId.js"
     ],
     "extraResources": [
       "assets/icon.ico"
