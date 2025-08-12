@@ -10,6 +10,7 @@ const sqlite3 = require('sqlite3').verbose();
 const codriverParser = require('./parseCodriver');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const { decode } = require('html-entities');
 const levenshtein = require('fast-levenshtein');
 
 
@@ -700,50 +701,65 @@ async function loadAllStageMetadata() {
   console.log('Loading stage metadata from RallySimFans...');
 
   try {
-    const response = await axios.get(url);
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+        'Accept-Language': 'en-GB,en;q=0.9',
+        'Referer': 'https://www.rallysimfans.hu/'
+      },
+      timeout: 20000
+    });
+
     const $ = cheerio.load(response.data);
 
-    const tables = $('table');
-    const stageTable = tables.eq(25); // Table #26 (0-based index)
-    const rows = stageTable.find('tr').slice(1); // skip header
+    // Grab all elements that carry a Tip('...') tooltip (these contain the stage HTML)
+    const tooltipCarriers = $('div[onmouseover^="Tip(\'"], a[onmouseover^="Tip(\'"]');
 
-    rows.each((_, row) => {
-      const cols = $(row).find('td');
-      if (cols.length >= 6) {
-        const div = $(cols[1]).find('div');
-        const onMouseOverAttr = div.attr('onmouseover');
+    tooltipCarriers.each((_, el) => {
+      const onmo = $(el).attr('onmouseover') || '';
+      const m = onmo.match(/Tip\(\s*'([\s\S]*?)'\s*\)/);
+      if (!m) return;
 
-        if (!onMouseOverAttr) return;
+      // Unescape JS string and decode HTML entities
+      let raw = m[1].replace(/\\"/g, '"').replace(/\\'/g, "'");
+      const tooltipHTML = decode(raw);
 
-        const tooltipMatch = onMouseOverAttr.match(/Tip\('(.*?)'\)/);
-        if (!tooltipMatch || tooltipMatch.length < 2) return;
+      const $tip = cheerio.load(tooltipHTML);
 
-        const tooltipHTML = tooltipMatch[1]
-          .replace(/\\'/g, "'")
-          .replace(/\\"/g, '"')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"');
+      const getNext = (label) => {
+        const tds = $tip('td').toArray();
+        const lab = tds.find(td => $tip(td).text().trim().startsWith(label));
+        if (!lab) return '';
+        const next = $tip(lab).next('td');
+        return next.length ? next.text().trim() : '';
+      };
 
-        const $tooltip = cheerio.load(tooltipHTML);
-        const name = $tooltip('h2').text().trim();
-        const idText = $tooltip('td:contains("ID:")').text().trim();
-        const stageId = parseInt(idText.replace('ID:', '').trim());
+      const name = $tip('h2').first().text().trim();
 
-        const lengthText = $tooltip('td:contains("Length:")').next().text().trim();
-        const length = parseFloat(lengthText.replace(' km', '').trim());
+      // ID may be in next cell or inline like "ID: 123"
+      let idText = getNext('ID:');
+      if (!idText) {
+        const inline = $tip('td').toArray().map(td => $tip(td).text()).join(' ');
+        const mm = inline.match(/ID:\s*(\d+)/);
+        idText = mm ? mm[1] : '';
+      }
 
-        const surface = $tooltip('td:contains("Surface:")').next().text().trim();
-        const author = $tooltip('td:contains("Author:")').next().text().trim();
-        const country = $tooltip('td:contains("Country:")').next().text().trim();
+      const lengthText = getNext('Length:');
+      const surface = getNext('Surface:');
+      const author = getNext('Author:');
+      const country = getNext('Country:');
 
+      // Lengths may be like "5,23 km" or "5.23 km"
+      const lengthKm = parseFloat((lengthText || '').replace(',', '.').replace(/[^0-9.]/g, ''));
+
+      if (name && idText) {
         data.push({
-          StageId: stageId,
+          StageId: parseInt(idText, 10),
           StageName: name,
-          Length: (length * 1000), // convert km to m and round to nearest integer
-          Surface: surface,
-          Author: author,
-          Country: country
+          Length: Number.isFinite(lengthKm) ? Math.round(lengthKm * 1000) : null, // store as metres like before
+          Surface: surface || '',
+          Author: author || '',
+          Country: country || ''
         });
       }
     });

@@ -49,9 +49,11 @@
     "chokidar": "^3.5.2",
     "fast-levenshtein": "^3.0.0",
     "fs-extra": "^11.2.0",
+    "html-entities": "^2.6.0",
     "ini": "^2.0.0",
     "mat-for-js": "github:KovacsGG/mat4js",
     "memoryjs": "^3.5.1",
+    "puppeteer": "^24.16.1",
     "ref-napi": "^3.0.3",
     "sqlite3": "^5.1.7",
     "ws": "^7.4.6"
